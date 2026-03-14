@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.production
+server/.env
+
+# Build outputs
+client/build/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Uploads (actual files - don't commit)
+server/uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
