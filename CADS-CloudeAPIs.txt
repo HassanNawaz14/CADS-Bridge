@@ -1,0 +1,21 @@
+CLOUD-API:
+Name: dgayru9ql
+Secret: cirUY6XnAPsYQodNhVsIfafeV5M
+key: 521849844268458
+
+
+Azure:
+Name:  cads-brdge-db-final.database.windows.net  (no i it's undoable mistake...)
+Admin: cads-admin
+Pass:   passnahiata123!
+
+
+DB_SERVER=cads-brdge-db-final.database.windows.net
+DB_USER=cads-admin
+DB_PASSWORD=passnahiata123!
+DB_NAME=cads-bridge-db-final
+DB_ENCRYPT=true
+DB_TRUST_SERVER_CERT=true
+CLOUDINARY_CLOUD_NAME=dgayru9ql
+CLOUDINARY_API_KEY=521849844268458
+CLOUDINARY_API_SECRET=cirUY6XnAPsYQodNhVsIfafeV5M

@@ -48,7 +48,7 @@ const Landing = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [statsRef, statsInView] = useInView(0.3);
-  const [menuOpen, setMenuOpen] = useState(false);
+
 
   // Already logged in → go to dashboard
   useEffect(() => {

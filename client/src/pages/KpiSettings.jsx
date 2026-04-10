@@ -12,7 +12,7 @@ const METRIC_INFO = {
 };
 
 const KpiSettings = () => {
-  const [thresholds, setThresholds] = useState([]);
+
   const [editValues, setEditValues] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(null);
@@ -22,7 +22,7 @@ const KpiSettings = () => {
     try {
       const res = await adminAPI.getKpiThresholds();
       const th = res.data.thresholds || [];
-      setThresholds(th);
+
       const vals = {};
       th.forEach((t) => { vals[`${t.metric_key}_${t.team}`] = t.min_value; });
       setEditValues(vals);

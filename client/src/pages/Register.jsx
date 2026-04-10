@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { authAPI } from '../services/api';
 
 const Register = () => {
-  const navigate = useNavigate();
+
   const [step, setStep] = useState(0); // 0=env, 1=team, 2=profile, 3=done
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

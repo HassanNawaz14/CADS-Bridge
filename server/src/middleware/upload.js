@@ -20,16 +20,23 @@ const ALLOWED_TYPES = [
 
 const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB) || 50) * 1024 * 1024;
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../', process.env.UPLOAD_DIR || 'uploads');
-    const projectDir = path.join(uploadDir, req.params.projectId || 'general');
-    fs.mkdirSync(projectDir, { recursive: true });
-    cb(null, projectDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    return {
+      folder: `cads-bridge/${req.params.projectId || 'general'}`,
+      resource_type: 'auto',
+      public_id: `${uuidv4()}_${file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')}`
+    };
   },
 });
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { onboardingAPI } from '../services/api';
 
 /* ─────────────────────────────────────────────────────────────
@@ -157,7 +157,6 @@ const AdminBlock = ({ team, form, onChange, errors }) => {
    MAIN COMPONENT
 ═══════════════════════════════════════════════════════════ */
 const Onboarding = () => {
-  const navigate = useNavigate();
   const [step, setStep]       = useState(1);
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState('');

@@ -102,6 +102,7 @@ const Tasks = () => {
     setLoading(false);
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [viewMine]);
 
   const handleStatusChange = async (id, newStatus) => {

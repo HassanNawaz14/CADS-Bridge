@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardLayout from '../components/DashboardLayout';
-import { projectsAPI, adminAPI } from '../services/api';
+import { projectsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const STATUS_BADGE = {
@@ -13,7 +13,7 @@ const STATUS_BADGE = {
 };
 
 const ProjectsPage = () => {
-  const { isAdmin, user } = useAuth();
+  const { isAdmin } = useAuth();
   const [projects, setProjects] = useState([]);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -30,6 +30,7 @@ const ProjectsPage = () => {
     setLoading(false);
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [filter]);
 
   const handleApprove = async (id) => {

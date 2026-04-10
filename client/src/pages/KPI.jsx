@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
-import { useAuth } from '../context/AuthContext';
 import { kpiAPI } from '../services/api';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
 
 const METRIC_LABELS = {
   report_accuracy:          'Report Accuracy',
@@ -71,7 +69,7 @@ const MemberCard = ({ name, initials, team, metrics, thresholds }) => {
 };
 
 const KPIPage = () => {
-  const { user } = useAuth();
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 

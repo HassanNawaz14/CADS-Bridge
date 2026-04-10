@@ -22,11 +22,10 @@ const config = {
 const migrations = [
   // ── 0. Create database if not exists ──────────────────────────────────
   `IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = '${process.env.DB_NAME}')
-     CREATE DATABASE ${process.env.DB_NAME};`,
+     CREATE DATABASE [${process.env.DB_NAME}];`,
 
   // ── 1. Environments (Firms) ───────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='environments' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='environments' AND xtype='U')
    CREATE TABLE environments (
      id            UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      firm_name     NVARCHAR(200)    NOT NULL,
@@ -38,8 +37,7 @@ const migrations = [
    );`,
 
   // ── 2. Users ──────────────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='users' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='users' AND xtype='U')
    CREATE TABLE users (
      id              UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      env_id          UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
@@ -60,8 +58,7 @@ const migrations = [
    );`,
 
   // ── 3. Refresh Tokens ─────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='refresh_tokens' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='refresh_tokens' AND xtype='U')
    CREATE TABLE refresh_tokens (
      id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      user_id     UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -71,8 +68,7 @@ const migrations = [
    );`,
 
   // ── 4. Projects ───────────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='projects' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='projects' AND xtype='U')
    CREATE TABLE projects (
      id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      env_id         UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
@@ -92,8 +88,7 @@ const migrations = [
    );`,
 
   // ── 5. Project Milestones ─────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_milestones' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_milestones' AND xtype='U')
    CREATE TABLE project_milestones (
      id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id   UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -104,8 +99,7 @@ const migrations = [
    );`,
 
   // ── 6. Project Members ────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
    CREATE TABLE project_members (
      id         UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -116,8 +110,7 @@ const migrations = [
    );`,
 
   // ── 7. Project Features (workspace tools enabled per project) ─────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_features' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_features' AND xtype='U')
    CREATE TABLE project_features (
      id         UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -126,8 +119,7 @@ const migrations = [
    );`,
 
   // ── 8. Project Messages (workspace chat) ──────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
    CREATE TABLE project_messages (
      id         UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id),
@@ -137,8 +129,7 @@ const migrations = [
    );`,
 
   // ── 9. Project Files ──────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
    CREATE TABLE project_files (
      id            UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id    UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id),
@@ -152,8 +143,7 @@ const migrations = [
    );`,
 
   // ── 10. Tasks ─────────────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='tasks' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='tasks' AND xtype='U')
    CREATE TABLE tasks (
      id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      project_id   UNIQUEIDENTIFIER NULL REFERENCES projects(id),
@@ -173,8 +163,7 @@ const migrations = [
    );`,
 
   // ── 11. KPI Records ───────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_records' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_records' AND xtype='U')
    CREATE TABLE kpi_records (
      id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      env_id       UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
@@ -187,8 +176,7 @@ const migrations = [
    );`,
 
   // ── 12. KPI Thresholds (admin-configurable, no code change needed) ────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_thresholds' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_thresholds' AND xtype='U')
    CREATE TABLE kpi_thresholds (
      id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      env_id      UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
@@ -201,8 +189,7 @@ const migrations = [
    );`,
 
   // ── 13. Audit Logs ────────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='audit_logs' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='audit_logs' AND xtype='U')
    CREATE TABLE audit_logs (
      id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      env_id      UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
@@ -217,8 +204,7 @@ const migrations = [
    );`,
 
   // ── 14. Notifications ─────────────────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='notifications' AND xtype='U')
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='notifications' AND xtype='U')
    CREATE TABLE notifications (
      id         UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
      user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -231,8 +217,7 @@ const migrations = [
    );`,
 
   // ── 15. Indexes for performance ───────────────────────────────────────
-  `USE ${process.env.DB_NAME};
-   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_users_env_email')
+  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_users_env_email')
      CREATE INDEX IX_users_env_email ON users(env_id, email);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_audit_logs_env_created')
      CREATE INDEX IX_audit_logs_env_created ON audit_logs(env_id, created_at DESC);
@@ -247,7 +232,8 @@ const migrations = [
 ];
 
 async function runMigrations() {
-  let pool;
+  let masterPool;
+  let dbPool;
   try {
     console.log('\n🔌 Connecting to SQL Server...');
     console.log(`   Server  : ${config.server}:${config.port}`);
@@ -255,18 +241,28 @@ async function runMigrations() {
     console.log(`   DB Name : ${process.env.DB_NAME}`);
     console.log(`   Encrypt : ${config.options.encrypt}\n`);
 
-    // Connect to master first to create DB
-    pool = await new sql.ConnectionPool({ ...config, database: 'master' }).connect();
-    console.log('✅ Connected to SQL Server (master)\n');
+    // Step 1: Connect to master to create DB if needed
+    masterPool = await new sql.ConnectionPool({ ...config, database: 'master' }).connect();
+    console.log('✅ Connected to SQL Server (master)');
 
-    for (let i = 0; i < migrations.length; i++) {
+    process.stdout.write(`   Running migration 1/${migrations.length} (create DB)... `);
+    await masterPool.request().query(migrations[0]);
+    console.log('done');
+    await masterPool.close();
+    masterPool = null;
+
+    // Step 2: Connect directly to the target database for all remaining migrations
+    dbPool = await new sql.ConnectionPool({ ...config, database: process.env.DB_NAME }).connect();
+    console.log(`✅ Connected to [${process.env.DB_NAME}]\n`);
+
+    for (let i = 1; i < migrations.length; i++) {
       process.stdout.write(`   Running migration ${i + 1}/${migrations.length}... `);
-      await pool.request().query(migrations[i]);
+      await dbPool.request().query(migrations[i]);
       console.log('done');
     }
 
     console.log('\n✅ All migrations completed successfully.\n');
-    await pool.close();
+    await dbPool.close();
     process.exit(0);
   } catch (err) {
     console.error('\n❌ Migration failed!\n');
@@ -299,7 +295,8 @@ async function runMigrations() {
     }
 
     console.error('\n📋 Full error stack:\n', err.stack || err);
-    if (pool) try { await pool.close(); } catch {}
+    if (masterPool) try { await masterPool.close(); } catch {}
+    if (dbPool) try { await dbPool.close(); } catch {}
     process.exit(1);
   }
 }

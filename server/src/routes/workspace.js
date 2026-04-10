@@ -179,9 +179,15 @@ router.get('/files/:fileId/download', async (req, res) => {
     if (!result.recordset.length) return res.status(404).json({ success: false, message: 'File not found.' });
 
     const file = result.recordset[0];
-    res.setHeader('Content-Disposition', `attachment; filename="${file.original_name}"`);
-    res.setHeader('Content-Type', file.mime_type);
-    res.sendFile(path.resolve(file.file_path));
+    
+    // Support Cloudinary URL redirect or legacy local file downloads
+    if (file.file_path.startsWith('http')) {
+      res.redirect(file.file_path);
+    } else {
+      res.setHeader('Content-Disposition', `attachment; filename="${file.original_name}"`);
+      res.setHeader('Content-Type', file.mime_type);
+      res.sendFile(path.resolve(file.file_path));
+    }
   } catch (err) {
     res.status(500).json({ success: false, message: 'Download failed.' });
   }
