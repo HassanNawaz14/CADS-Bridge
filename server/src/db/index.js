@@ -13,9 +13,9 @@ const config = {
     enableArithAbort: true,
   },
   pool: {
-    max: 20,
-    min: 2,
-    idleTimeoutMillis: 30000,
+    max: process.env.VERCEL === '1' ? 5 : 20,
+    min: 0,
+    idleTimeoutMillis: 15000,
   },
   connectionTimeout: 15000,
   requestTimeout: 30000,

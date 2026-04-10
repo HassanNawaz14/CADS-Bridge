@@ -1,13 +1,11 @@
 require('dotenv').config();
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
+
+const IS_VERCEL = process.env.VERCEL === '1';
 
 const logger = require('./utils/logger');
 const { getPool } = require('./db');
@@ -23,59 +21,68 @@ const kpiRoutes          = require('./routes/kpi');
 const notifRoutes        = require('./routes/notifications');
 const onboardingRoutes   = require('./routes/onboarding');
 
-const app    = express();
-const server = http.createServer(app);
+const app = express();
 
-// ── Ensure upload / log dirs exist ────────────────────────────────────────
-['uploads', 'logs'].forEach((dir) => {
-  fs.mkdirSync(path.join(__dirname, '..', dir), { recursive: true });
-});
+// ── Ensure upload / log dirs exist (local dev only) ──────────────────────
+if (!IS_VERCEL) {
+  const fs = require('fs');
+  ['uploads', 'logs'].forEach((dir) => {
+    fs.mkdirSync(path.join(__dirname, '..', dir), { recursive: true });
+  });
+}
 
-// ── Socket.IO ─────────────────────────────────────────────────────────────
-const io = new Server(server, {
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-});
+// ── Socket.IO (local dev only — Vercel serverless doesn't support WebSockets) ──
+let server = null;
+let io = null;
 
-// JWT authentication for socket connections
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error('Authentication required'));
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = decoded.userId;
-    socket.envId  = decoded.envId;
-    next();
-  } catch {
-    next(new Error('Invalid token'));
-  }
-});
+if (!IS_VERCEL) {
+  const http = require('http');
+  const { Server } = require('socket.io');
+  const jwt = require('jsonwebtoken');
 
-io.on('connection', (socket) => {
-  logger.debug(`Socket connected: user ${socket.userId}`);
+  server = http.createServer(app);
 
-  // Personal channel for notifications
-  socket.join(`user:${socket.userId}`);
-
-  // Join project workspace rooms
-  socket.on('join_project', (projectId) => {
-    socket.join(`project:${projectId}`);
-    logger.debug(`User ${socket.userId} joined project:${projectId}`);
+  io = new Server(server, {
+    cors: {
+      origin: process.env.CLIENT_URL || 'http://localhost:3000',
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
   });
 
-  socket.on('leave_project', (projectId) => {
-    socket.leave(`project:${projectId}`);
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Authentication required'));
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.userId = decoded.userId;
+      socket.envId  = decoded.envId;
+      next();
+    } catch {
+      next(new Error('Invalid token'));
+    }
   });
 
-  socket.on('disconnect', () => {
-    logger.debug(`Socket disconnected: user ${socket.userId}`);
-  });
-});
+  io.on('connection', (socket) => {
+    logger.debug(`Socket connected: user ${socket.userId}`);
+    socket.join(`user:${socket.userId}`);
 
-// Make io accessible in routes via req.app.get('io')
+    socket.on('join_project', (projectId) => {
+      socket.join(`project:${projectId}`);
+      logger.debug(`User ${socket.userId} joined project:${projectId}`);
+    });
+
+    socket.on('leave_project', (projectId) => {
+      socket.leave(`project:${projectId}`);
+    });
+
+    socket.on('disconnect', () => {
+      logger.debug(`Socket disconnected: user ${socket.userId}`);
+    });
+  });
+}
+
+// Make io accessible in routes (will be null on Vercel — routes handle this gracefully)
 app.set('io', io);
 
 // ── Security middleware ────────────────────────────────────────────────────
@@ -135,23 +142,26 @@ app.get('/api/health', (req, res) => {
 app.use(notFound);
 app.use(errorHandler);
 
-// ── Start server ───────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 5000;
+// ── Start server (local dev) or export for Vercel ─────────────────────────
+if (!IS_VERCEL && server) {
+  const PORT = process.env.PORT || 5000;
 
-const startServer = async () => {
-  try {
-    await getPool(); // Verify DB connection on startup
-    server.listen(PORT, () => {
-      logger.info(`🚀 CADS-Bridge server running on port ${PORT}`);
-      logger.info(`📡 Socket.IO ready`);
-      logger.info(`🌍 Environment: ${process.env.NODE_ENV}`);
-    });
-  } catch (err) {
-    logger.error('Failed to start server:', err.message);
-    process.exit(1);
-  }
-};
+  const startServer = async () => {
+    try {
+      await getPool(); // Verify DB connection on startup
+      server.listen(PORT, () => {
+        logger.info(`🚀 CADS-Bridge server running on port ${PORT}`);
+        logger.info(`📡 Socket.IO ready`);
+        logger.info(`🌍 Environment: ${process.env.NODE_ENV}`);
+      });
+    } catch (err) {
+      logger.error('Failed to start server:', err.message);
+      process.exit(1);
+    }
+  };
 
-startServer();
+  startServer();
+}
 
-module.exports = { app, server };
+// Export for Vercel serverless
+module.exports = app;
