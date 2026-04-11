@@ -2,22 +2,22 @@ const sql = require('mssql');
 const logger = require('../utils/logger');
 
 const config = {
-  server: process.env.DB_SERVER || 'localhost',
+  server: process.env.DB_SERVER || 'cads-brdge-db-final.database.windows.net',
   port: parseInt(process.env.DB_PORT) || 1433,
-  database: process.env.DB_NAME || 'cads_bridge',
-  user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'cads-bridge-db-final',
+  user: process.env.DB_USER || 'cads-admin',
+  password: process.env.DB_PASSWORD || 'passnahiata123!',
   options: {
-    encrypt: process.env.DB_ENCRYPT === 'true',
+    encrypt: process.env.DB_ENCRYPT !== 'false', // Azure requires encrypt=true
     trustServerCertificate: process.env.DB_TRUST_SERVER_CERT !== 'false',
     enableArithAbort: true,
   },
   pool: {
     max: process.env.VERCEL === '1' ? 5 : 20,
     min: 0,
-    idleTimeoutMillis: 15000,
+    idleTimeoutMillis: 30000,
   },
-  connectionTimeout: 15000,
+  connectionTimeout: 30000,
   requestTimeout: 30000,
 };
 
