@@ -108,8 +108,10 @@ router.post('/provision',
       const caAdminId  = uuidv4();
       const dsAdminId  = uuidv4();
 
-      const caHash = await bcrypt.hash(caAdmin.password, 10);
-      const dsHash = await bcrypt.hash(dsAdmin.password, 10);
+      const [caHash, dsHash] = await Promise.all([
+        bcrypt.hash(caAdmin.password, 8),
+        bcrypt.hash(dsAdmin.password, 8)
+      ]);
 
       const caInitials = caAdmin.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
       const dsInitials = dsAdmin.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
@@ -165,8 +167,8 @@ router.post('/provision',
         { key: 'pipeline_uptime',          team: 'DS', min: 95 },
         { key: 'prediction_delivery_rate', team: 'DS', min: 80 },
       ];
-      for (const t of thresholds) {
-        await query(
+      await Promise.all(thresholds.map(t => 
+        query(
           `INSERT INTO kpi_thresholds (id, env_id, metric_key, min_value, team)
            VALUES (NEWID(), @envId, @key, @min, @team)`,
           {
@@ -175,8 +177,8 @@ router.post('/provision',
             min:   { type: sql.Decimal(10, 4), value: t.min },
             team:  { type: sql.NVarChar, value: t.team },
           }
-        );
-      }
+        )
+      ));
 
       // ── Audit log the environment creation
       await auditLog({
@@ -204,7 +206,20 @@ router.post('/provision',
       });
     } catch (err) {
       console.error('Provision error:', err);
-      res.status(500).json({ success: false, message: 'Failed to provision environment. Please try again.' });
+      
+      const errorStr = (err.message || '').toLowerCase();
+      let uiMessage = 'Failed to provision environment. Please try again.';
+      
+      // Provide deep Azure SQL debugging straight to the UI
+      if (errorStr.includes('client with ip address') || errorStr.includes('not allowed to access the server') || errorStr.includes('firewall')) {
+        uiMessage = `Azure Firewall Blocked Vercel: Please open the Azure Portal, go to your SQL Server 'Networking' settings, and check "Allow Azure services and resources to access this server" (or whitelist all IPs 0.0.0.0 to 255.255.255.255).`;
+      } else if (errorStr.includes('timeout') || errorStr.includes('closed')) {
+        uiMessage = 'Database connection from Vercel timed out or was closed prematurely.';
+      } else {
+        uiMessage = `Database Error: ${err.message}`;
+      }
+      
+      res.status(500).json({ success: false, message: uiMessage });
     }
   }
 );
