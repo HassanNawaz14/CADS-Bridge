@@ -153,6 +153,71 @@ const AdminBlock = ({ team, form, onChange, errors }) => {
   );
 };
 
+/* ── Layout wrapper ── */
+const Layout = ({ children, step }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', minHeight: '100vh' }}>
+    {/* Left sidebar */}
+    <aside style={{ background: 'var(--ink)', color: 'var(--paper)', padding: '3rem', display: 'flex', flexDirection: 'column', position: 'sticky', top: 0, height: '100vh' }}>
+      {/* Logo */}
+      <div style={{ fontFamily: 'Syne', fontWeight: 800, fontSize: '1.2rem', letterSpacing: '-0.02em', marginBottom: '3rem' }}>
+        <span style={{ color: 'var(--ca)' }}>CA</span>DS<span style={{ color: 'var(--ds)' }}>-Bridge</span>
+      </div>
+
+      {/* Steps */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
+        {STEPS.map((s, i) => {
+          const isDone   = step > s.num;
+          const isActive = step === s.num;
+          return (
+            <div key={s.num} style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', padding: '1.1rem 0', position: 'relative' }}>
+              {/* Connector line */}
+              {i < STEPS.length - 1 && (
+                <div style={{ position: 'absolute', left: 17, top: 48, width: 2, height: 'calc(100% - 16px)', background: isDone ? 'rgba(34,197,94,0.5)' : 'rgba(255,255,255,0.08)' }} />
+              )}
+              {/* Circle */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: 'Syne', fontSize: '0.8rem', fontWeight: 700,
+                position: 'relative', zIndex: 1,
+                background: isDone ? 'var(--success)' : isActive ? 'white' : 'var(--ink)',
+                border: `2px solid ${isDone ? 'var(--success)' : isActive ? 'white' : 'rgba(255,255,255,0.15)'}`,
+                color: isDone ? 'white' : isActive ? 'var(--ink)' : 'rgba(255,255,255,0.35)',
+              }}>
+                {isDone ? '✓' : s.num}
+              </div>
+              {/* Text */}
+              <div style={{ paddingTop: '0.2rem' }}>
+                <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.9rem', color: isActive ? 'white' : isDone ? 'rgba(245,243,238,0.6)' : 'rgba(245,243,238,0.3)' }}>
+                  {s.label}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: isActive ? 'rgba(245,243,238,0.5)' : 'rgba(245,243,238,0.2)', marginTop: '0.1rem' }}>
+                  {s.num === 1 && 'Register your organisation'}
+                  {s.num === 2 && 'CA Lead + DS Lead admin accounts'}
+                  {s.num === 3 && 'Optionally add initial team members'}
+                  {s.num === 4 && 'Your environment is live'}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bottom note */}
+      <div style={{ padding: '1.1rem', background: 'rgba(255,255,255,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.08)', marginTop: 'auto' }}>
+        <p style={{ fontSize: '0.78rem', color: 'rgba(245,243,238,0.4)', lineHeight: 1.6 }}>
+          💡 Both admins have equal authority within their own team. Neither can access the other's admin panel.
+        </p>
+      </div>
+    </aside>
+
+    {/* Main content */}
+    <main style={{ padding: '4rem 5rem', overflowY: 'auto' }}>
+      {children}
+    </main>
+  </div>
+);
+
 /* ═══════════════════════════════════════════════════════════
    MAIN COMPONENT
 ═══════════════════════════════════════════════════════════ */
@@ -266,76 +331,11 @@ const Onboarding = () => {
   const removeMemberRow = (i) => setMembers((p) => p.filter((_, idx) => idx !== i));
   const updateMember = (i, field, val) => setMembers((p) => p.map((m, idx) => idx === i ? { ...m, [field]: val } : m));
 
-  /* ── Layout wrapper ── */
-  const Layout = ({ children }) => (
-    <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', minHeight: '100vh' }}>
-      {/* Left sidebar */}
-      <aside style={{ background: 'var(--ink)', color: 'var(--paper)', padding: '3rem', display: 'flex', flexDirection: 'column', position: 'sticky', top: 0, height: '100vh' }}>
-        {/* Logo */}
-        <div style={{ fontFamily: 'Syne', fontWeight: 800, fontSize: '1.2rem', letterSpacing: '-0.02em', marginBottom: '3rem' }}>
-          <span style={{ color: 'var(--ca)' }}>CA</span>DS<span style={{ color: 'var(--ds)' }}>-Bridge</span>
-        </div>
-
-        {/* Steps */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
-          {STEPS.map((s, i) => {
-            const isDone   = step > s.num;
-            const isActive = step === s.num;
-            return (
-              <div key={s.num} style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', padding: '1.1rem 0', position: 'relative' }}>
-                {/* Connector line */}
-                {i < STEPS.length - 1 && (
-                  <div style={{ position: 'absolute', left: 17, top: 48, width: 2, height: 'calc(100% - 16px)', background: isDone ? 'rgba(34,197,94,0.5)' : 'rgba(255,255,255,0.08)' }} />
-                )}
-                {/* Circle */}
-                <div style={{
-                  width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontFamily: 'Syne', fontSize: '0.8rem', fontWeight: 700,
-                  position: 'relative', zIndex: 1,
-                  background: isDone ? 'var(--success)' : isActive ? 'white' : 'var(--ink)',
-                  border: `2px solid ${isDone ? 'var(--success)' : isActive ? 'white' : 'rgba(255,255,255,0.15)'}`,
-                  color: isDone ? 'white' : isActive ? 'var(--ink)' : 'rgba(255,255,255,0.35)',
-                }}>
-                  {isDone ? '✓' : s.num}
-                </div>
-                {/* Text */}
-                <div style={{ paddingTop: '0.2rem' }}>
-                  <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.9rem', color: isActive ? 'white' : isDone ? 'rgba(245,243,238,0.6)' : 'rgba(245,243,238,0.3)' }}>
-                    {s.label}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: isActive ? 'rgba(245,243,238,0.5)' : 'rgba(245,243,238,0.2)', marginTop: '0.1rem' }}>
-                    {s.num === 1 && 'Register your organisation'}
-                    {s.num === 2 && 'CA Lead + DS Lead admin accounts'}
-                    {s.num === 3 && 'Optionally add initial team members'}
-                    {s.num === 4 && 'Your environment is live'}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Bottom note */}
-        <div style={{ padding: '1.1rem', background: 'rgba(255,255,255,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.08)', marginTop: 'auto' }}>
-          <p style={{ fontSize: '0.78rem', color: 'rgba(245,243,238,0.4)', lineHeight: 1.6 }}>
-            💡 Both admins have equal authority within their own team. Neither can access the other's admin panel.
-          </p>
-        </div>
-      </aside>
-
-      {/* Main content */}
-      <main style={{ padding: '4rem 5rem', overflowY: 'auto' }}>
-        {children}
-      </main>
-    </div>
-  );
-
   /* ══════════════════════════════════════════
      STEP 1 — Firm Details
   ══════════════════════════════════════════ */
   if (step === 1) return (
-    <Layout>
+    <Layout step={step}>
       <div style={{ maxWidth: 560 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'var(--ca-light)', border: '1px solid rgba(26,107,255,0.2)', color: 'var(--ca)', padding: '0.3rem 0.9rem', borderRadius: '2rem', fontSize: '0.75rem', fontWeight: 700, marginBottom: '1.25rem' }}>
           Step 1 of 4 · Firm Details
@@ -383,7 +383,7 @@ const Onboarding = () => {
      STEP 2 — Admin Accounts
   ══════════════════════════════════════════ */
   if (step === 2) return (
-    <Layout>
+    <Layout step={step}>
       <div style={{ maxWidth: 760 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'var(--ca-light)', border: '1px solid rgba(26,107,255,0.2)', color: 'var(--ca)', padding: '0.3rem 0.9rem', borderRadius: '2rem', fontSize: '0.75rem', fontWeight: 700, marginBottom: '1.25rem' }}>
           Step 2 of 4 · Admin Accounts
@@ -416,7 +416,7 @@ const Onboarding = () => {
      STEP 3 — Invite Team Members (optional)
   ══════════════════════════════════════════ */
   if (step === 3) return (
-    <Layout>
+    <Layout step={step}>
       <div style={{ maxWidth: 680 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'var(--ds-light)', border: '1px solid rgba(255,107,53,0.2)', color: 'var(--ds)', padding: '0.3rem 0.9rem', borderRadius: '2rem', fontSize: '0.75rem', fontWeight: 700, marginBottom: '1.25rem' }}>
           Step 3 of 4 · Invite Team — Optional
@@ -487,7 +487,7 @@ const Onboarding = () => {
      STEP 4 — Launch / Success
   ══════════════════════════════════════════ */
   if (step === 4) return (
-    <Layout>
+    <Layout step={step}>
       <div style={{ maxWidth: 580, textAlign: 'center', margin: '0 auto', paddingTop: '2rem' }}>
         <div style={{ fontSize: '4rem', marginBottom: '1.5rem' }}>🚀</div>
         <h1 style={{ fontFamily: 'Syne', fontSize: '2.25rem', fontWeight: 800, letterSpacing: '-0.03em', marginBottom: '0.75rem' }}>
