@@ -65,7 +65,7 @@ const requireRole = (...roles) => (req, res, next) => {
  */
 const requireTeam = (...teams) => (req, res, next) => {
   if (!req.user) return res.status(401).json({ success: false, message: 'Unauthenticated.' });
-  if (!teams.includes(req.user.team) && req.user.role !== 'platform_admin') {
+  if (!teams.includes(req.user.team) && req.user.role !== 'platform_admin' && req.user.role !== 'super_admin') {
     return res.status(403).json({ success: false, message: 'Access denied. Wrong team.' });
   }
   next();

@@ -176,9 +176,9 @@ const AdminUsers = () => {
                   </div>
                 </div>
                 <div style={{ fontSize: '0.83rem', color: 'var(--muted)' }}>{u.email}</div>
-                <span className={`badge badge-${u.team === 'CA' ? 'ca' : 'ds'}`}>{u.team}</span>
+                <span className={`badge badge-${u.team === 'CA' ? 'ca' : u.team === 'DS' ? 'ds' : 'primary'}`}>{u.team === 'NA' ? 'None' : u.team}</span>
                 <span style={{ fontSize: '0.8rem', color: 'var(--muted)', textTransform: 'capitalize' }}>
-                  {u.role === 'platform_admin' ? 'Super Admin' : u.role}
+                  {u.role === 'platform_admin' ? 'Platform Admin' : u.role === 'super_admin' ? 'Super Admin' : u.role}
                 </span>
                 <div>
                   <span className={`badge ${sb.cls}`}>{sb.label}</span>
@@ -260,25 +260,31 @@ const AdminUsers = () => {
             {createError && <div className="alert alert-error" style={{ marginBottom: '1rem' }}>⚠️ {createError}</div>}
 
             {/* Team toggle */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
-              {['CA', 'DS'].map((t) => (
-                <div
-                  key={t}
-                  onClick={() => setCreateForm((p) => ({ ...p, team: t }))}
-                  style={{
-                    padding: '0.85rem',
-                    border: `2px solid ${createForm.team === t ? (t === 'CA' ? 'var(--ca)' : 'var(--ds)') : 'var(--border)'}`,
-                    borderRadius: 'var(--radius-sm)',
-                    background: createForm.team === t ? (t === 'CA' ? 'var(--ca-light)' : 'var(--ds-light)') : 'white',
-                    cursor: 'pointer', textAlign: 'center',
-                    fontWeight: 700, fontSize: '0.88rem',
-                    color: createForm.team === t ? (t === 'CA' ? 'var(--ca)' : 'var(--ds)') : 'var(--muted)',
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  {t === 'CA' ? '📒 CA Admin' : '🔬 DS Admin'}
-                </div>
-              ))}
+            <div style={{ display: 'grid', gridTemplateColumns: (user?.role === 'platform_admin' || user?.role === 'super_admin') ? '1fr 1fr 1fr' : '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              {['CA', 'DS', ...((user?.role === 'platform_admin' || user?.role === 'super_admin') ? ['NA'] : [])].map((t) => {
+                const isCA = t === 'CA';
+                const isDS = t === 'DS';
+                const activeColor = isCA ? 'var(--ca)' : isDS ? 'var(--ds)' : 'var(--primary)';
+                const activeBg = isCA ? 'var(--ca-light)' : isDS ? 'var(--ds-light)' : 'rgba(99, 102, 241, 0.1)';
+                return (
+                  <div
+                    key={t}
+                    onClick={() => setCreateForm((p) => ({ ...p, team: t }))}
+                    style={{
+                      padding: '0.85rem',
+                      border: `2px solid ${createForm.team === t ? activeColor : 'var(--border)'}`,
+                      borderRadius: 'var(--radius-sm)',
+                      background: createForm.team === t ? activeBg : 'white',
+                      cursor: 'pointer', textAlign: 'center',
+                      fontWeight: 700, fontSize: '0.88rem',
+                      color: createForm.team === t ? activeColor : 'var(--muted)',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {isCA ? '📒 CA Admin' : isDS ? '🔬 DS Admin' : '👑 Super Admin'}
+                  </div>
+                );
+              })}
             </div>
 
             <div className="form-group">

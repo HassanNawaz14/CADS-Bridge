@@ -78,16 +78,23 @@ router.post('/provision',
     body('dsAdmin.password').isLength({ min: 8 })
       .matches(/^(?=.*[A-Z])(?=.*[0-9])/)
       .withMessage('DS Admin password must be 8+ chars with uppercase and number.'),
+    // Super Admin
+    body('superAdmin.fullName').trim().isLength({ min: 2 }).withMessage('Super Admin name is required.'),
+    body('superAdmin.email').isEmail().normalizeEmail().withMessage('Super Admin email is invalid.'),
+    body('superAdmin.designation').trim().notEmpty().withMessage('Super Admin designation is required.'),
+    body('superAdmin.password').isLength({ min: 8 })
+      .matches(/^(?=.*[A-Z])(?=.*[0-9])/)
+      .withMessage('Super Admin password must be 8+ chars with uppercase and number.'),
   ]),
   async (req, res) => {
     try {
-      const { firmName, industry, caAdmin, dsAdmin } = req.body;
+      const { firmName, industry, caAdmin, dsAdmin, superAdmin } = req.body;
 
-      // Ensure CA and DS admins have different emails
-      if (caAdmin.email === dsAdmin.email) {
+      // Ensure CA, DS, and Super admins have different emails
+      if (caAdmin.email === dsAdmin.email || caAdmin.email === superAdmin.email || dsAdmin.email === superAdmin.email) {
         return res.status(400).json({
           success: false,
-          message: 'CA Admin and DS Admin must have different email addresses.',
+          message: 'All Administrators must have different email addresses.',
         });
       }
 
@@ -104,26 +111,52 @@ router.post('/provision',
         attempts++;
       } while (attempts < 5);
 
-      const envId      = uuidv4();
-      const caAdminId  = uuidv4();
-      const dsAdminId  = uuidv4();
+      const envId = uuidv4();
+      const caAdminId = uuidv4();
+      const dsAdminId = uuidv4();
+      const superAdminId = uuidv4();
 
-      const [caHash, dsHash] = await Promise.all([
+      const [caHash, dsHash, superHash] = await Promise.all([
         bcrypt.hash(caAdmin.password, 8),
-        bcrypt.hash(dsAdmin.password, 8)
+        bcrypt.hash(dsAdmin.password, 8),
+        bcrypt.hash(superAdmin.password, 8)
       ]);
 
       const caInitials = caAdmin.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
       const dsInitials = dsAdmin.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
+      const superInitials = superAdmin.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
+
+      // ── Auto-patch Database Constraints immediately before inserts
+      try {
+        await query(`
+            DECLARE @tc NVARCHAR(MAX) = '';
+            SELECT @tc = @tc + 'ALTER TABLE dbo.users DROP CONSTRAINT [' + name + '];' 
+            FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.users') AND (definition LIKE '%team%' OR name LIKE '%team%');
+            IF @tc <> '' EXEC(@tc);
+
+            DECLARE @rc NVARCHAR(MAX) = '';
+            SELECT @rc = @rc + 'ALTER TABLE dbo.users DROP CONSTRAINT [' + name + '];' 
+            FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.users') AND (definition LIKE '%[rR]ole%' OR name LIKE '%role%');
+            IF @rc <> '' EXEC(@rc);
+
+            IF NOT EXISTS (SELECT * FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.users') AND name = 'chk_users_team')
+               ALTER TABLE dbo.users ADD CONSTRAINT chk_users_team CHECK (team IN ('CA', 'DS', 'NA'));
+               
+            IF NOT EXISTS (SELECT * FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.users') AND name = 'chk_users_role')
+               ALTER TABLE dbo.users ADD CONSTRAINT chk_users_role CHECK (role IN ('member','admin','platform_admin','super_admin'));
+        `);
+      } catch (err) {
+        console.error('Failed to patch schema constraints:', err);
+      }
 
       // ── Create environment
       await query(
         `INSERT INTO environments (id, firm_name, industry, env_code)
          VALUES (@id, @firm, @ind, @code)`,
         {
-          id:   { type: sql.UniqueIdentifier, value: envId },
+          id: { type: sql.UniqueIdentifier, value: envId },
           firm: { type: sql.NVarChar, value: firmName },
-          ind:  { type: sql.NVarChar, value: industry },
+          ind: { type: sql.NVarChar, value: industry },
           code: { type: sql.NVarChar, value: envCode },
         }
       );
@@ -133,13 +166,13 @@ router.post('/provision',
         `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
          VALUES (@id, @envId, @name, @email, @hash, @desig, 'CA', 'admin', 'active', @init)`,
         {
-          id:    { type: sql.UniqueIdentifier, value: caAdminId },
+          id: { type: sql.UniqueIdentifier, value: caAdminId },
           envId: { type: sql.UniqueIdentifier, value: envId },
-          name:  { type: sql.NVarChar, value: caAdmin.fullName },
+          name: { type: sql.NVarChar, value: caAdmin.fullName },
           email: { type: sql.NVarChar, value: caAdmin.email },
-          hash:  { type: sql.NVarChar, value: caHash },
+          hash: { type: sql.NVarChar, value: caHash },
           desig: { type: sql.NVarChar, value: caAdmin.designation },
-          init:  { type: sql.NVarChar, value: caInitials },
+          init: { type: sql.NVarChar, value: caInitials },
         }
       );
 
@@ -148,34 +181,49 @@ router.post('/provision',
         `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
          VALUES (@id, @envId, @name, @email, @hash, @desig, 'DS', 'admin', 'active', @init)`,
         {
-          id:    { type: sql.UniqueIdentifier, value: dsAdminId },
+          id: { type: sql.UniqueIdentifier, value: dsAdminId },
           envId: { type: sql.UniqueIdentifier, value: envId },
-          name:  { type: sql.NVarChar, value: dsAdmin.fullName },
+          name: { type: sql.NVarChar, value: dsAdmin.fullName },
           email: { type: sql.NVarChar, value: dsAdmin.email },
-          hash:  { type: sql.NVarChar, value: dsHash },
+          hash: { type: sql.NVarChar, value: dsHash },
           desig: { type: sql.NVarChar, value: dsAdmin.designation },
-          init:  { type: sql.NVarChar, value: dsInitials },
+          init: { type: sql.NVarChar, value: dsInitials },
+        }
+      );
+
+      // ── Create Super Admin
+      await query(
+        `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
+         VALUES (@id, @envId, @name, @email, @hash, @desig, 'NA', 'super_admin', 'active', @init)`,
+        {
+          id: { type: sql.UniqueIdentifier, value: superAdminId },
+          envId: { type: sql.UniqueIdentifier, value: envId },
+          name: { type: sql.NVarChar, value: superAdmin.fullName },
+          email: { type: sql.NVarChar, value: superAdmin.email },
+          hash: { type: sql.NVarChar, value: superHash },
+          desig: { type: sql.NVarChar, value: superAdmin.designation },
+          init: { type: sql.NVarChar, value: superInitials },
         }
       );
 
       // ── Seed default KPI thresholds for this environment
       const thresholds = [
-        { key: 'report_accuracy',          team: 'CA', min: 85 },
-        { key: 'task_completion_rate',     team: 'CA', min: 75 },
-        { key: 'audit_findings_resolved',  team: 'CA', min: 70 },
-        { key: 'model_accuracy',           team: 'DS', min: 80 },
-        { key: 'pipeline_uptime',          team: 'DS', min: 95 },
+        { key: 'report_accuracy', team: 'CA', min: 85 },
+        { key: 'task_completion_rate', team: 'CA', min: 75 },
+        { key: 'audit_findings_resolved', team: 'CA', min: 70 },
+        { key: 'model_accuracy', team: 'DS', min: 80 },
+        { key: 'pipeline_uptime', team: 'DS', min: 95 },
         { key: 'prediction_delivery_rate', team: 'DS', min: 80 },
       ];
-      await Promise.all(thresholds.map(t => 
+      await Promise.all(thresholds.map(t =>
         query(
           `INSERT INTO kpi_thresholds (id, env_id, metric_key, min_value, team)
            VALUES (NEWID(), @envId, @key, @min, @team)`,
           {
             envId: { type: sql.UniqueIdentifier, value: envId },
-            key:   { type: sql.NVarChar, value: t.key },
-            min:   { type: sql.Decimal(10, 4), value: t.min },
-            team:  { type: sql.NVarChar, value: t.team },
+            key: { type: sql.NVarChar, value: t.key },
+            min: { type: sql.Decimal(10, 4), value: t.min },
+            team: { type: sql.NVarChar, value: t.team },
           }
         )
       ));
@@ -202,14 +250,15 @@ router.post('/provision',
         admins: {
           ca: { id: caAdminId, fullName: caAdmin.fullName, email: caAdmin.email, team: 'CA' },
           ds: { id: dsAdminId, fullName: dsAdmin.fullName, email: dsAdmin.email, team: 'DS' },
+          super: { id: superAdminId, fullName: superAdmin.fullName, email: superAdmin.email, team: 'NA' },
         },
       });
     } catch (err) {
       console.error('Provision error:', err);
-      
+
       const errorStr = (err.message || '').toLowerCase();
       let uiMessage = 'Failed to provision environment. Please try again.';
-      
+
       // Provide deep Azure SQL debugging straight to the UI
       if (errorStr.includes('client with ip address') || errorStr.includes('not allowed to access the server') || errorStr.includes('firewall')) {
         uiMessage = `Azure Firewall Blocked Vercel: Please open the Azure Portal, go to your SQL Server 'Networking' settings, and check "Allow Azure services and resources to access this server" (or whitelist all IPs 0.0.0.0 to 255.255.255.255).`;
@@ -218,7 +267,7 @@ router.post('/provision',
       } else {
         uiMessage = `Database Error: ${err.message}`;
       }
-      
+
       res.status(500).json({ success: false, message: uiMessage });
     }
   }
@@ -232,7 +281,7 @@ router.post('/invite-members',
     body('members').isArray({ min: 1 }).withMessage('At least one member required.'),
     body('members.*.fullName').trim().notEmpty().withMessage('Member name is required.'),
     body('members.*.email').isEmail().normalizeEmail().withMessage('Valid email required.'),
-    body('members.*.team').isIn(['CA', 'DS']).withMessage('Team must be CA or DS.'),
+    body('members.*.team').isIn(['CA', 'DS', 'NA']).withMessage('Team must be CA, DS, or NA.'),
     body('members.*.designation').trim().notEmpty().withMessage('Designation is required.'),
   ]),
   async (req, res) => {
@@ -254,7 +303,7 @@ router.post('/invite-members',
       const tempPassword = await bcrypt.hash('TempPass@123', 10);
 
       const results = [];
-      const errors  = [];
+      const errors = [];
 
       for (const m of members) {
         try {
@@ -272,20 +321,23 @@ router.post('/invite-members',
           }
 
           const initials = m.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
-          const userId   = uuidv4();
+          const userId = uuidv4();
+
+          const role = m.team === 'NA' ? 'super_admin' : 'member';
 
           await query(
             `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
-             VALUES (@id, @envId, @name, @email, @hash, @desig, @team, 'member', 'pending', @init)`,
+             VALUES (@id, @envId, @name, @email, @hash, @desig, @team, @role, 'pending', @init)`,
             {
-              id:    { type: sql.UniqueIdentifier, value: userId },
+              id: { type: sql.UniqueIdentifier, value: userId },
               envId: { type: sql.UniqueIdentifier, value: envId },
-              name:  { type: sql.NVarChar, value: m.fullName },
+              name: { type: sql.NVarChar, value: m.fullName },
               email: { type: sql.NVarChar, value: m.email },
-              hash:  { type: sql.NVarChar, value: tempPassword },
+              hash: { type: sql.NVarChar, value: tempPassword },
               desig: { type: sql.NVarChar, value: m.designation },
-              team:  { type: sql.NVarChar, value: m.team },
-              init:  { type: sql.NVarChar, value: initials },
+              team: { type: sql.NVarChar, value: m.team },
+              role: { type: sql.NVarChar, value: role },
+              init: { type: sql.NVarChar, value: initials },
             }
           );
 

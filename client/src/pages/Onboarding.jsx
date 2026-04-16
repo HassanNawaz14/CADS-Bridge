@@ -17,10 +17,10 @@ const INDUSTRIES = [
 ];
 
 const STEPS = [
-  { num: 1, label: 'Firm Details',   icon: '🏢' },
+  { num: 1, label: 'Firm Details', icon: '🏢' },
   { num: 2, label: 'Admin Accounts', icon: '👑' },
-  { num: 3, label: 'Invite Team',    icon: '👥' },
-  { num: 4, label: 'Launch',         icon: '🚀' },
+  { num: 3, label: 'Invite Team', icon: '👥' },
+  { num: 4, label: 'Launch', icon: '🚀' },
 ];
 
 /* ── reusable field component ── */
@@ -28,7 +28,7 @@ const Field = ({ label, error, children, hint }) => (
   <div className="form-group" style={{ marginBottom: '1.1rem' }}>
     <label className="form-label">{label}</label>
     {children}
-    {hint  && !error && <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.3rem' }}>{hint}</div>}
+    {hint && !error && <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.3rem' }}>{hint}</div>}
     {error && <div className="form-error">{error}</div>}
   </div>
 );
@@ -48,7 +48,7 @@ const PasswordStrength = ({ password }) => {
   return (
     <div style={{ marginTop: '0.4rem' }}>
       <div style={{ display: 'flex', gap: '3px', marginBottom: '0.25rem' }}>
-        {[1,2,3,4].map((i) => (
+        {[1, 2, 3, 4].map((i) => (
           <div key={i} style={{ flex: 1, height: 3, borderRadius: 2, background: i <= score ? colors[score] : 'var(--border)', transition: 'background 0.2s' }} />
         ))}
       </div>
@@ -61,8 +61,10 @@ const PasswordStrength = ({ password }) => {
 const AdminBlock = ({ team, form, onChange, errors }) => {
   const [showPass, setShowPass] = useState(false);
   const isCA = team === 'CA';
-  const color = isCA ? 'var(--ca)' : 'var(--ds)';
-  const prefix = isCA ? 'ca' : 'ds';
+  const isDS = team === 'DS';
+  const isSuper = team === 'Super';
+  const color = isCA ? 'var(--ca)' : isDS ? 'var(--ds)' : 'var(--primary)';
+  const prefix = isCA ? 'ca' : isDS ? 'ds' : 'super';
 
   return (
     <div style={{
@@ -74,18 +76,18 @@ const AdminBlock = ({ team, form, onChange, errors }) => {
       {/* Card header */}
       <div style={{ padding: '1.1rem 1.4rem', background: `${color}08`, borderBottom: `1px solid ${color}20`, display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
         <div style={{ width: 38, height: 38, borderRadius: '50%', background: color, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Syne', fontWeight: 800, fontSize: '0.85rem' }}>
-          {team}
+          {isSuper ? 'SA' : team}
         </div>
         <div>
           <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.95rem' }}>
-            {isCA ? 'CA Administrator' : 'DS Administrator'}
+            {isCA ? 'CA Administrator' : isDS ? 'DS Administrator' : 'Super Administrator'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
-            {isCA ? 'Chartered Accountant Lead' : 'Data Science Lead'}
+            {isCA ? 'Chartered Accountant Lead' : isDS ? 'Data Science Lead' : 'Overall Environment Lead'}
           </div>
         </div>
         <span style={{ marginLeft: 'auto', background: `${color}15`, color, padding: '0.2rem 0.65rem', borderRadius: '1rem', fontSize: '0.7rem', fontWeight: 700 }}>
-          Team Admin
+          {isSuper ? 'Super Admin' : 'Team Admin'}
         </span>
       </div>
 
@@ -93,19 +95,19 @@ const AdminBlock = ({ team, form, onChange, errors }) => {
       <div style={{ padding: '1.25rem 1.4rem' }}>
         <Field label="Full Name *" error={errors[`${prefix}Name`]}>
           <input className={`form-input ${errors[`${prefix}Name`] ? 'error' : ''}`}
-            placeholder={isCA ? 'e.g. Ahmad Raza' : 'e.g. Sara Khan'}
+            placeholder={isCA ? 'e.g. Ahmad Raza' : isDS ? 'e.g. Sara Khan' : 'e.g. Alex Doe'}
             value={form[`${prefix}Name`]} onChange={(e) => onChange(`${prefix}Name`, e.target.value)} />
         </Field>
 
         <Field label="Designation / Job Title *" error={errors[`${prefix}Designation`]}>
           <input className={`form-input ${errors[`${prefix}Designation`] ? 'error' : ''}`}
-            placeholder={isCA ? 'e.g. Chief Accountant' : 'e.g. Lead Data Scientist'}
+            placeholder={isCA ? 'e.g. Chief Accountant' : isDS ? 'e.g. Lead Data Scientist' : 'e.g. Operations Director'}
             value={form[`${prefix}Designation`]} onChange={(e) => onChange(`${prefix}Designation`, e.target.value)} />
         </Field>
 
         <Field label="Work Email *" error={errors[`${prefix}Email`]}>
           <input type="email" className={`form-input ${errors[`${prefix}Email`] ? 'error' : ''}`}
-            placeholder={isCA ? 'ca.admin@firm.com' : 'ds.admin@firm.com'}
+            placeholder={isCA ? 'ca.admin@firm.com' : isDS ? 'ds.admin@firm.com' : 'super.admin@firm.com'}
             value={form[`${prefix}Email`]} onChange={(e) => onChange(`${prefix}Email`, e.target.value)} />
         </Field>
 
@@ -136,10 +138,10 @@ const AdminBlock = ({ team, form, onChange, errors }) => {
           <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--muted)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Permissions</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
             {[
-              `Manage ${team} team members & access levels`,
-              `Configure ${team}-side workspace settings`,
-              isCA ? 'Review & approve financial artifacts' : 'Review & approve model artifacts',
-              `Access ${team} admin dashboard`,
+              isSuper ? `Manage all teams globally` : `Manage ${team} team members & access levels`,
+              isSuper ? `Configure environment-wide settings` : `Configure ${team}-side workspace settings`,
+              isCA ? 'Review & approve financial artifacts' : isDS ? 'Review & approve model artifacts' : 'Review & approve all artifacts',
+              isSuper ? `Access Global Admin dashboard` : `Access ${team} admin dashboard`,
             ].map((p) => (
               <div key={p} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.78rem', color: 'var(--muted)' }}>
                 <div style={{ width: 18, height: 18, borderRadius: '50%', background: `${color}15`, color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6rem', flexShrink: 0 }}>✓</div>
@@ -166,7 +168,7 @@ const Layout = ({ children, step }) => (
       {/* Steps */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
         {STEPS.map((s, i) => {
-          const isDone   = step > s.num;
+          const isDone = step > s.num;
           const isActive = step === s.num;
           return (
             <div key={s.num} style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', padding: '1.1rem 0', position: 'relative' }}>
@@ -222,7 +224,7 @@ const Layout = ({ children, step }) => (
    MAIN COMPONENT
 ═══════════════════════════════════════════════════════════ */
 const Onboarding = () => {
-  const [step, setStep]       = useState(1);
+  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState('');
 
@@ -236,6 +238,7 @@ const Onboarding = () => {
   const [admins, setAdmins] = useState({
     caName: '', caDesignation: '', caEmail: '', caPassword: '', caConfirm: '',
     dsName: '', dsDesignation: '', dsEmail: '', dsPassword: '', dsConfirm: '',
+    superName: '', superDesignation: '', superEmail: '', superPassword: '', superConfirm: '',
   });
 
   // Step 3 fields — dynamic member rows
@@ -253,7 +256,7 @@ const Onboarding = () => {
   /* ── validators ── */
   const validateStep1 = () => {
     const e = {};
-    if (!firm.name.trim())     e.firmName = 'Firm name is required.';
+    if (!firm.name.trim()) e.firmName = 'Firm name is required.';
     if (!firm.industry.trim()) e.industry = 'Please select an industry.';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -262,18 +265,18 @@ const Onboarding = () => {
   const validateStep2 = () => {
     const e = {};
     const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const passRx  = /^(?=.*[A-Z])(?=.*[0-9]).{8,}$/;
+    const passRx = /^(?=.*[A-Z])(?=.*[0-9]).{8,}$/;
 
-    ['ca', 'ds'].forEach((p) => {
-      if (!admins[`${p}Name`].trim())        e[`${p}Name`]        = 'Name is required.';
+    ['ca', 'ds', 'super'].forEach((p) => {
+      if (!admins[`${p}Name`].trim()) e[`${p}Name`] = 'Name is required.';
       if (!admins[`${p}Designation`].trim()) e[`${p}Designation`] = 'Designation is required.';
-      if (!emailRx.test(admins[`${p}Email`]))e[`${p}Email`]       = 'Valid email is required.';
+      if (!emailRx.test(admins[`${p}Email`])) e[`${p}Email`] = 'Valid email is required.';
       if (!passRx.test(admins[`${p}Password`])) e[`${p}Password`] = 'Min 8 chars, 1 uppercase, 1 number.';
       if (admins[`${p}Password`] !== admins[`${p}Confirm`]) e[`${p}Confirm`] = 'Passwords do not match.';
     });
 
-    if (admins.caEmail && admins.dsEmail && admins.caEmail === admins.dsEmail) {
-      e.dsEmail = 'CA and DS Admin emails must be different.';
+    if (admins.caEmail && admins.dsEmail && admins.superEmail && (admins.caEmail === admins.dsEmail || admins.caEmail === admins.superEmail || admins.dsEmail === admins.superEmail)) {
+      e.superEmail = 'Admins must have different emails.';
     }
 
     setErrors(e);
@@ -299,6 +302,7 @@ const Onboarding = () => {
           industry: firm.industry,
           caAdmin: { fullName: admins.caName, designation: admins.caDesignation, email: admins.caEmail, password: admins.caPassword },
           dsAdmin: { fullName: admins.dsName, designation: admins.dsDesignation, email: admins.dsEmail, password: admins.dsPassword },
+          superAdmin: { fullName: admins.superName, designation: admins.superDesignation, email: admins.superEmail, password: admins.superPassword },
         });
         setResult(res.data);
         setStep(3);
@@ -384,7 +388,7 @@ const Onboarding = () => {
   ══════════════════════════════════════════ */
   if (step === 2) return (
     <Layout step={step}>
-      <div style={{ maxWidth: 760 }}>
+      <div style={{ maxWidth: 1100 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'var(--ca-light)', border: '1px solid rgba(26,107,255,0.2)', color: 'var(--ca)', padding: '0.3rem 0.9rem', borderRadius: '2rem', fontSize: '0.75rem', fontWeight: 700, marginBottom: '1.25rem' }}>
           Step 2 of 4 · Admin Accounts
         </div>
@@ -392,14 +396,15 @@ const Onboarding = () => {
           Create your admin<br />accounts
         </h1>
         <p style={{ color: 'var(--muted)', fontSize: '0.95rem', lineHeight: 1.65, marginBottom: '2.5rem', maxWidth: 520 }}>
-          Set up one lead administrator per team. These accounts will have full control over their team's access, permissions, and workspace.
+          Set up one lead administrator per team, plus a global Super Admin. These accounts will have full control over their respective domains.
         </p>
 
         {apiError && <div className="alert alert-error" style={{ marginBottom: '1.5rem' }}>⚠️ {apiError}</div>}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
           <AdminBlock team="CA" form={admins} onChange={updateAdmin} errors={errors} />
           <AdminBlock team="DS" form={admins} onChange={updateAdmin} errors={errors} />
+          <AdminBlock team="Super" form={admins} onChange={updateAdmin} errors={errors} />
         </div>
 
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
@@ -456,6 +461,7 @@ const Onboarding = () => {
               <select className="form-input" value={m.team} onChange={(e) => updateMember(i, 'team', e.target.value)}>
                 <option value="CA">CA</option>
                 <option value="DS">DS</option>
+                <option value="NA">Super Admin</option>
               </select>
               <input className="form-input" placeholder="Designation" value={m.designation} onChange={(e) => updateMember(i, 'designation', e.target.value)} />
               {members.length > 1 ? (
@@ -518,8 +524,9 @@ const Onboarding = () => {
         </div>
 
         {/* Admin credentials summary */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem', textAlign: 'left' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '2rem', textAlign: 'left' }}>
           {[
+            { label: 'Super Admin', data: result?.admins?.super, color: 'var(--primary)' },
             { label: 'CA Admin', data: result?.admins?.ca, color: 'var(--ca)' },
             { label: 'DS Admin', data: result?.admins?.ds, color: 'var(--ds)' },
           ].map((a) => (

@@ -45,9 +45,9 @@ const migrations = [
      email           NVARCHAR(255)    NOT NULL,
      password_hash   NVARCHAR(255)    NOT NULL,
      designation     NVARCHAR(100)    NOT NULL,
-     team            NVARCHAR(2)      NOT NULL CHECK (team IN ('CA','DS')),
+     team            NVARCHAR(2)      NOT NULL CHECK (team IN ('CA','DS','NA')),
      role            NVARCHAR(20)     NOT NULL DEFAULT 'member'
-                                      CHECK (role IN ('member','admin','platform_admin')),
+                                      CHECK (role IN ('member','admin','platform_admin','super_admin')),
      status          NVARCHAR(20)     NOT NULL DEFAULT 'pending'
                                       CHECK (status IN ('pending','active','rejected','deactivated')),
      avatar_initials NVARCHAR(4)      NOT NULL DEFAULT '',

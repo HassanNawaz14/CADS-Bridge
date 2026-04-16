@@ -1,0 +1,15 @@
+CADS-SS88PQTLXLT4
+ca.admin1@admin.com
+Admin@123
+ds.admin1@admin.com
+Admin@123
+ds.emp1@exp.com
+Ds123456
+ca.emp1@exp.com
+Ds123456
+
+with super admin:
+CADS-EHF5NVYNXGXF
+admin@admin.com
+ds.admin@admin.com
+ca.admin@admin.com

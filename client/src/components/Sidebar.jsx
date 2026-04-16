@@ -30,17 +30,17 @@ const Sidebar = ({ onNewProject }) => {
 
       {/* User */}
       <div className="sb-user">
-        <div className={`avatar avatar-md ${isCA ? 'avatar-ca' : 'avatar-ds'}`}>
+        <div className={`avatar avatar-md ${isCA ? 'avatar-ca' : user?.team === 'DS' ? 'avatar-ds' : 'avatar-primary'}`}>
           {user?.initials || user?.avatarInitials || '??'}
         </div>
         <div style={{ flex: 1 }}>
           <div className="sb-name">{user?.fullName}</div>
           <div className="sb-role">
             <div className="role-dot" style={{ background: accentColor }} />
-            {user?.designation || `${team} ${user?.role === 'admin' ? 'Admin' : 'Member'}`}
+            {user?.designation || (team === 'NA' ? 'Super Admin' : `${team} ${user?.role === 'admin' ? 'Admin' : 'Member'}`)}
           </div>
         </div>
-        <span className={`badge badge-${isCA ? 'ca' : 'ds'}`}>{team}</span>
+        <span className={`badge badge-${isCA ? 'ca' : user?.team === 'DS' ? 'ds' : 'primary'}`}>{team === 'NA' ? 'None' : team}</span>
       </div>
 
       {/* New Project Button */}

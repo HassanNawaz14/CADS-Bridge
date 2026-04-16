@@ -101,9 +101,9 @@ export const AuthProvider = ({ children }) => {
     getSocket,
     isCA: user?.team === 'CA',
     isDS: user?.team === 'DS',
-    isAdmin: ['admin', 'platform_admin'].includes(user?.role),
-    accentColor: user?.team === 'DS' ? 'var(--ds)' : 'var(--ca)',
-    accentClass: user?.team === 'DS' ? 'ds' : 'ca',
+    isAdmin: ['admin', 'platform_admin', 'super_admin'].includes(user?.role),
+    accentColor: user?.team === 'DS' ? 'var(--ds)' : user?.team === 'CA' ? 'var(--ca)' : 'var(--primary)',
+    accentClass: user?.team === 'DS' ? 'ds' : user?.team === 'CA' ? 'ca' : 'primary',
   };
 
   if (loading) {

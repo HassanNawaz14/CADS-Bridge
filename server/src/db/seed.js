@@ -23,6 +23,7 @@ async function seed() {
     const adminId = uuidv4();
     const caAdminId = uuidv4();
     const dsAdminId = uuidv4();
+    const superAdminId = uuidv4();
 
     const passwordHash = await bcrypt.hash('Admin@123', 10);
 
@@ -80,6 +81,20 @@ async function seed() {
       }
     );
 
+    // 4.5 Demo Super Admin
+    await query(
+      `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
+       VALUES (@id, @envId, @name, @email, @hash, @desig, 'NA', 'super_admin', 'active', 'SA')`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: superAdminId },
+        envId: { type: sql.UniqueIdentifier, value: envId },
+        name:  { type: sql.NVarChar, value: 'Super Admin' },
+        email: { type: sql.NVarChar, value: 'super.admin@demo.com' },
+        hash:  { type: sql.NVarChar, value: passwordHash },
+        desig: { type: sql.NVarChar, value: 'Overall Environment Super Admin' },
+      }
+    );
+
     // 5. Seed default KPI thresholds for demo env
     const thresholds = [
       { key: 'report_accuracy',        team: 'CA', min: 85 },
@@ -110,6 +125,7 @@ async function seed() {
     console.log(`║  Demo Environment Code : ${envCode.padEnd(19)}║`);
     console.log('╠══════════════════════════════════════════════╣');
     console.log('║  Platform Admin  : admin@cadsbridge.com      ║');
+    console.log('║  Super Admin     : super.admin@demo.com      ║');
     console.log('║  CA Admin        : ca.admin@demo.com         ║');
     console.log('║  DS Admin        : ds.admin@demo.com         ║');
     console.log('║  Password (all)  : Admin@123                 ║');

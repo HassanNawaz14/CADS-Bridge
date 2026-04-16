@@ -126,27 +126,27 @@ const Register = () => {
                 <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '1.5rem' }}>
                   Your team determines your dashboard, permissions, and role.
                 </p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
-                  {['CA', 'DS'].map((t) => (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                  {['CA', 'DS', 'NA'].map((t) => (
                     <div
                       key={t}
                       onClick={() => update('team', t)}
                       style={{
-                        padding: '1.5rem 1rem',
-                        border: `2px solid ${form.team === t ? (t === 'CA' ? 'var(--ca)' : 'var(--ds)') : 'var(--border)'}`,
+                        padding: '1.5rem 0.5rem',
+                        border: `2px solid ${form.team === t ? (t === 'CA' ? 'var(--ca)' : t === 'DS' ? 'var(--ds)' : 'var(--primary)') : 'var(--border)'}`,
                         borderRadius: 'var(--radius-md)',
-                        background: form.team === t ? (t === 'CA' ? 'var(--ca-light)' : 'var(--ds-light)') : 'white',
+                        background: form.team === t ? (t === 'CA' ? 'var(--ca-light)' : t === 'DS' ? 'var(--ds-light)' : 'rgba(99, 102, 241, 0.1)') : 'white',
                         cursor: 'pointer',
                         textAlign: 'center',
                         transition: 'all 0.15s',
                       }}
                     >
-                      <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{t === 'CA' ? '📒' : '🔬'}</div>
-                      <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.95rem', color: t === 'CA' ? 'var(--ca)' : 'var(--ds)' }}>
-                        {t === 'CA' ? 'Chartered Accountant' : 'Data Scientist'}
+                      <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{t === 'CA' ? '📒' : t === 'DS' ? '🔬' : '👑'}</div>
+                      <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.95rem', color: t === 'CA' ? 'var(--ca)' : t === 'DS' ? 'var(--ds)' : 'var(--primary)' }}>
+                        {t === 'CA' ? 'Chartered Accountant' : t === 'DS' ? 'Data Scientist' : 'Super Admin'}
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.3rem' }}>
-                        {t === 'CA' ? 'Financial analytics & compliance' : 'Models & prediction pipelines'}
+                        {t === 'CA' ? 'Financial analytics & compliance' : t === 'DS' ? 'Models & prediction pipelines' : 'Global environment management'}
                       </div>
                     </div>
                   ))}
@@ -154,7 +154,7 @@ const Register = () => {
                 <div style={{ display: 'flex', gap: '0.75rem' }}>
                   <button className="btn btn-ghost" onClick={() => setStep(0)} style={{ flex: 1, justifyContent: 'center' }}>← Back</button>
                   <button
-                    className={`btn btn-${form.team === 'DS' ? 'ds' : 'ca'}`}
+                    className={`btn btn-${form.team === 'DS' ? 'ds' : form.team === 'CA' ? 'ca' : 'primary'}`}
                     disabled={!form.team}
                     onClick={() => setStep(2)}
                     style={{ flex: 2, justifyContent: 'center' }}
@@ -199,7 +199,7 @@ const Register = () => {
                 </p>
                 <div style={{ display: 'flex', gap: '0.75rem' }}>
                   <button className="btn btn-ghost" onClick={() => setStep(1)} style={{ flex: 1, justifyContent: 'center' }}>← Back</button>
-                  <button className={`btn btn-${form.team === 'DS' ? 'ds' : 'ca'}`} onClick={submit} disabled={loading} style={{ flex: 2, justifyContent: 'center' }}>
+                  <button className={`btn btn-${form.team === 'DS' ? 'ds' : form.team === 'CA' ? 'ca' : 'primary'}`} onClick={submit} disabled={loading} style={{ flex: 2, justifyContent: 'center' }}>
                     {loading ? <><span className="spinner" />Submitting...</> : 'Submit Request 🚀'}
                   </button>
                 </div>

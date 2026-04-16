@@ -15,7 +15,7 @@ const validate = (vs) => async (req, res, next) => {
 };
 
 // All admin routes require auth + admin role
-router.use(authenticate, requireRole('admin', 'platform_admin'));
+router.use(authenticate, requireRole('admin', 'platform_admin', 'super_admin'));
 
 // ── GET /api/admin/users/pending ─────────────────────────────────────────
 router.get('/users/pending', async (req, res) => {
@@ -236,15 +236,20 @@ router.post('/users',
     body('fullName').trim().isLength({ min: 2 }).withMessage('Full name is required.'),
     body('email').isEmail().normalizeEmail().withMessage('Valid email is required.'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
-    body('team').isIn(['CA', 'DS']).withMessage('Team must be CA or DS.'),
+    body('team').isIn(['CA', 'DS', 'NA']).withMessage('Team must be CA, DS, or NA.'),
     body('designation').trim().notEmpty().withMessage('Designation is required.'),
   ]),
   async (req, res) => {
     try {
       const { fullName, email, password, team, designation } = req.body;
 
-      // Only platform_admin can create team admins
-      if (req.user.role !== 'platform_admin' && req.user.role !== 'admin') {
+      // Only platform_admin or super_admin can create super_admins
+      if (team === 'NA' && req.user.role !== 'platform_admin' && req.user.role !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Only super admins can create super admins.' });
+      }
+
+      // Only platform_admin, super_admin, or admin can create team admins
+      if (req.user.role !== 'platform_admin' && req.user.role !== 'super_admin' && req.user.role !== 'admin') {
         return res.status(403).json({ success: false, message: 'Insufficient permissions.' });
       }
 
@@ -261,11 +266,12 @@ router.post('/users',
 
       const hash = await bcrypt.hash(password, 10);
       const initials = fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 4);
+      const role = team === 'NA' ? 'super_admin' : 'admin';
 
       const result = await query(
         `INSERT INTO users (id, env_id, full_name, email, password_hash, designation, team, role, status, avatar_initials)
          OUTPUT INSERTED.id, INSERTED.full_name, INSERTED.email, INSERTED.team, INSERTED.role
-         VALUES (NEWID(), @envId, @name, @email, @hash, @desig, @team, 'admin', 'active', @initials)`,
+         VALUES (NEWID(), @envId, @name, @email, @hash, @desig, @team, @role, 'active', @initials)`,
         {
           envId:    { type: sql.UniqueIdentifier, value: req.user.env_id },
           name:     { type: sql.NVarChar, value: fullName },
@@ -273,6 +279,7 @@ router.post('/users',
           hash:     { type: sql.NVarChar, value: hash },
           desig:    { type: sql.NVarChar, value: designation },
           team:     { type: sql.NVarChar, value: team },
+          role:     { type: sql.NVarChar, value: role },
           initials: { type: sql.NVarChar, value: initials },
         }
       );
