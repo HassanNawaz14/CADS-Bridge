@@ -216,7 +216,21 @@ const migrations = [
      created_at DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
 
-  // ── 15. Indexes for performance ───────────────────────────────────────
+  // ── 15. Project History (for blueprint 3.2.3) ──────────────────────────
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_history' AND xtype='U')
+   CREATE TABLE project_history (
+     id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id   UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     changed_by   UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     change_type  NVARCHAR(50)     NOT NULL,   -- 'created','updated','approved','rejected','member_added',etc.
+     field_name   NVARCHAR(100)    NULL,       -- which field changed
+     old_value    NVARCHAR(MAX)    NULL,
+     new_value    NVARCHAR(MAX)    NULL,
+     change_note  NVARCHAR(MAX)    NULL,       -- optional note
+     changed_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  // ── 16. Indexes for performance ───────────────────────────────────────
   `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_users_env_email')
      CREATE INDEX IX_users_env_email ON users(env_id, email);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_audit_logs_env_created')
@@ -228,7 +242,9 @@ const migrations = [
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_project_messages_project')
      CREATE INDEX IX_project_messages_project ON project_messages(project_id, sent_at DESC);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_kpi_records_user_period')
-     CREATE INDEX IX_kpi_records_user_period ON kpi_records(user_id, period_start, period_end);`,
+     CREATE INDEX IX_kpi_records_user_period ON kpi_records(user_id, period_start, period_end);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_project_history_project')
+     CREATE INDEX IX_project_history_project ON project_history(project_id, changed_at DESC);`,
 ];
 
 async function runMigrations() {

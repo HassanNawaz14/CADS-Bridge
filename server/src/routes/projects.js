@@ -5,6 +5,7 @@ const { query, sql, transaction } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../utils/auditLog');
 const { notify } = require('../utils/notify');
+const { logProjectChange } = require('../utils/projectHistory');
 
 const validate = (vs) => async (req, res, next) => {
   await Promise.all(vs.map((v) => v.run(req)));
@@ -14,6 +15,41 @@ const validate = (vs) => async (req, res, next) => {
 };
 
 router.use(authenticate);
+
+// ── GET /api/projects/team/users ──────────────────────────────────────────
+// Public endpoint for authenticated users to fetch active team members (for project creation)
+router.get('/team/users', async (req, res) => {
+  try {
+    const { status, team, search } = req.query;
+    let whereClause = 'WHERE u.env_id = @envId AND u.status = @status';
+    const params = {
+      envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      status: { type: sql.NVarChar, value: status || 'active' },
+    };
+
+    if (team) {
+      whereClause += ' AND u.team = @team';
+      params.team = { type: sql.NVarChar, value: team };
+    }
+    if (search) {
+      whereClause += ' AND (u.full_name LIKE @search OR u.email LIKE @search)';
+      params.search = { type: sql.NVarChar, value: `%${search}%` };
+    }
+
+    const result = await query(
+      `SELECT u.id, u.full_name, u.email, u.team, u.designation, u.avatar_initials
+       FROM users u
+       ${whereClause}
+       AND u.role != 'platform_admin'
+       ORDER BY u.full_name ASC`,
+      params
+    );
+    res.json({ success: true, users: result.recordset });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch team members.' });
+  }
+});
 
 // ── GET /api/projects ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -115,7 +151,8 @@ router.post('/',
     body('name').trim().isLength({ min: 3, max: 200 }).withMessage('Project name must be 3–200 characters.'),
     body('description').trim().notEmpty().withMessage('Description is required.'),
     body('objectives').trim().notEmpty().withMessage('Objectives are required.'),
-    body('members').isArray({ min: 2 }).withMessage('At least 2 members required.'),
+    body('caMembers').isArray({ min: 1 }).withMessage('At least one CA member required.'),
+    body('dsMembers').isArray({ min: 1 }).withMessage('At least one DS member required.'),
     body('startDate').isDate().withMessage('Valid start date is required.'),
     body('endDate').isDate().withMessage('Valid end date is required.'),
     body('milestones').isArray({ min: 1 }).withMessage('At least one milestone is required.'),
@@ -123,32 +160,40 @@ router.post('/',
   ]),
   async (req, res) => {
     try {
-      const { name, description, objectives, members, startDate, endDate, milestones, features } = req.body;
+      const { name, description, objectives, caMembers, dsMembers, startDate, endDate, milestones, features } = req.body;
 
       if (new Date(endDate) <= new Date(startDate)) {
         return res.status(400).json({ success: false, message: 'End date must be after start date.' });
       }
 
-      // Verify members belong to this env
+      // Combine CA and DS members
+      const allMembers = [...new Set([...caMembers, ...dsMembers])];
+
+      // Verify members belong to this env and have correct teams
       const memberCheck = await query(
         `SELECT id, team FROM users
-         WHERE id IN (${members.map((_, i) => `@m${i}`).join(',')}) AND env_id = @envId AND status = 'active'`,
+         WHERE id IN (${allMembers.map((_, i) => `@m${i}`).join(',')}) AND env_id = @envId AND status = 'active'`,
         {
-          ...Object.fromEntries(members.map((m, i) => [`m${i}`, { type: sql.UniqueIdentifier, value: m }])),
+          ...Object.fromEntries(allMembers.map((m, i) => [`m${i}`, { type: sql.UniqueIdentifier, value: m }])),
           envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
         }
       );
-      if (memberCheck.recordset.length !== members.length) {
+      if (memberCheck.recordset.length !== allMembers.length) {
         return res.status(400).json({ success: false, message: 'One or more selected members are invalid.' });
       }
 
-      // Must have at least one CA and one DS
-      const teams = new Set(memberCheck.recordset.map((m) => m.team));
-      if (!teams.has('CA') || !teams.has('DS')) {
-        return res.status(400).json({ success: false, message: 'Project must include at least one CA and one DS member.' });
+      // Verify CA members are actually CA and DS members are actually DS
+      const caTeams = new Set(memberCheck.recordset.filter(m => caMembers.includes(m.id)).map(m => m.team));
+      const dsTeams = new Set(memberCheck.recordset.filter(m => dsMembers.includes(m.id)).map(m => m.team));
+
+      if (!caTeams.has('CA')) {
+        return res.status(400).json({ success: false, message: 'Selected CA members must be from the CA team.' });
+      }
+      if (!dsTeams.has('DS')) {
+        return res.status(400).json({ success: false, message: 'Selected DS members must be from the DS team.' });
       }
 
-      // Create project + members + milestones + features in one transaction
+      // Create project + members + milestones + features
       const projectId = require('uuid').v4();
 
       await query(
@@ -167,8 +212,8 @@ router.post('/',
       );
 
       // Add members (including initiator if not included)
-      const allMembers = new Set([...members, req.user.id]);
-      for (const memberId of allMembers) {
+      const membersToAdd = new Set([...allMembers, req.user.id]);
+      for (const memberId of membersToAdd) {
         await query(
           `INSERT INTO project_members (id, project_id, user_id) VALUES (NEWID(), @pid, @uid)`,
           {
@@ -216,6 +261,14 @@ router.post('/',
           io: req.app.get('io'),
         });
       }
+
+      // Log project creation in history
+      await logProjectChange({
+        projectId,
+        changedBy: req.user.id,
+        changeType: 'created',
+        changeNote: `Project created with ${caMembers.length} CA + ${dsMembers.length} DS members, ${milestones.length} milestones, features: ${features.join(', ')}`,
+      });
 
       await auditLog({
         envId: req.user.env_id,
@@ -277,6 +330,16 @@ router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, 
       });
     }
 
+    // Log approval in history
+    await logProjectChange({
+      projectId: id,
+      changedBy: req.user.id,
+      changeType: 'approved',
+      fieldName: 'status',
+      oldValue: 'pending',
+      newValue: 'active',
+    });
+
     await auditLog({
       envId: req.user.env_id,
       actorId: req.user.id,
@@ -329,6 +392,17 @@ router.post('/:id/reject', requireRole('admin', 'platform_admin'), async (req, r
       io: req.app.get('io'),
     });
 
+    // Log rejection in history
+    await logProjectChange({
+      projectId: id,
+      changedBy: req.user.id,
+      changeType: 'rejected',
+      fieldName: 'status',
+      oldValue: 'pending',
+      newValue: 'rejected',
+      changeNote: reason,
+    });
+
     await auditLog({
       envId: req.user.env_id,
       actorId: req.user.id,
@@ -343,6 +417,42 @@ router.post('/:id/reject', requireRole('admin', 'platform_admin'), async (req, r
     res.json({ success: true, message: 'Project rejected.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to reject project.' });
+  }
+});
+
+// ── GET /api/projects/:id/history ──────────────────────────────────────
+router.get('/:id/history', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user has access to this project
+    const accessCheck = await query(
+      `SELECT pm.id FROM project_members pm
+       JOIN projects p ON p.id = pm.project_id
+       WHERE pm.project_id = @id AND pm.user_id = @uid AND pm.is_active = 1 AND p.env_id = @envId`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: id },
+        uid:   { type: sql.UniqueIdentifier, value: req.user.id },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      }
+    );
+    if (!accessCheck.recordset.length && !['admin', 'platform_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const history = await query(
+      `SELECT ph.change_type, ph.field_name, ph.old_value, ph.new_value, ph.change_note, ph.changed_at,
+              u.full_name as changed_by_name, u.team as changed_by_team
+       FROM project_history ph
+       LEFT JOIN users u ON u.id = ph.changed_by
+       WHERE ph.project_id = @id
+       ORDER BY ph.changed_at DESC`,
+      { id: { type: sql.UniqueIdentifier, value: id } }
+    );
+
+    res.json({ success: true, history: history.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch project history.' });
   }
 });
 

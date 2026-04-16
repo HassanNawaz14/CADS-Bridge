@@ -59,6 +59,7 @@ export const projectsAPI = {
   create:  (data)   => api.post('/projects', data),
   approve: (id)     => api.post(`/projects/${id}/approve`),
   reject:  (id, reason) => api.post(`/projects/${id}/reject`, { reason }),
+  history: (id)     => api.get(`/projects/${id}/history`),
 };
 
 // ── Workspace ─────────────────────────────────────────────

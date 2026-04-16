@@ -1,130 +1,309 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { adminAPI, projectsAPI } from '../services/api';
+import { projectsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import api from '../services/api';
 
-const FEATURES = [
-  { key: 'annotations',   label: '📝 Annotations',    desc: 'Collaborative document annotations' },
-  { key: 'knowledge_hub', label: '📚 Knowledge Hub',   desc: 'Shared reference library' },
-  { key: 'reporting',     label: '📊 Reporting',       desc: 'Stakeholder reports' },
-  { key: 'messaging',     label: '💬 Messaging',       desc: 'Project chat (always included)', locked: true },
-  { key: 'file_sharing',  label: '📁 File Sharing',    desc: 'Upload/download artifacts', locked: true },
-  { key: 'task_board',    label: '✅ Task Board',      desc: 'Task management (always included)', locked: true },
+// Feature options available for projects
+const OPTIONAL_FEATURES = [
+  { key: 'annotations', label: '📝 Annotations', desc: 'Inline document annotations' },
+  { key: 'knowledge_hub', label: '📚 Knowledge Hub', desc: 'Shared glossary & past projects' },
+  { key: 'reporting', label: '📊 Reporting Engine', desc: 'Joint stakeholder reports' },
+  { key: 'conflict_detection', label: '⚠️ Conflict Detection', desc: 'CA-DS discrepancy alerts' },
 ];
 
-const steps = ['Details', 'Team', 'Timeline', 'Features'];
+const CORE_FEATURES = [
+  { key: 'messaging', label: '💬 Messaging', desc: 'Project chat' },
+  { key: 'file_sharing', label: '📁 File Sharing', desc: 'Upload/download artifacts' },
+  { key: 'task_board', label: '✅ Task Board', desc: 'Task management' },
+];
+
+const ALL_FEATURES = [...CORE_FEATURES, ...OPTIONAL_FEATURES];
+
+const ProjectDomain = [
+  { key: 'finance', label: '💰 Finance' },
+  { key: 'data', label: '📊 Data & Analytics' },
+  { key: 'hybrid', label: '🔗 Hybrid (Finance + Data)' },
+];
 
 const NewProjectModal = ({ onClose }) => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [step, setStep] = useState(0);
-  const [loading, setLoading] = useState(false);
+  // Step state
+  const [step, setStep] = useState(1); // Steps: 1=Details, 2=Team, 3=Timeline, 4=Features, 5=Review
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
-  const [envUsers, setEnvUsers] = useState([]);
 
-  // Form state (persisted across steps)
+  // Data
+  const [caUsers, setCaUsers] = useState([]); // CA team members available
+  const [dsUsers, setDsUsers] = useState([]); // DS team members available
+  const [loadingUsers, setLoadingUsers] = useState(true);
+
+  // Form state (auto-save between steps)
   const [form, setForm] = useState({
-    name: '', description: '', objectives: '',
-    members: [],
-    startDate: '', endDate: '',
+    // Step 1: Details
+    name: '',
+    description: '',
+    objectives: '',
+    domain: 'hybrid',
+    startDate: '',
+    endDate: '',
+
+    // Step 2: Team
+    caMembers: [], // array of CA user IDs
+    dsMembers: [], // array of DS user IDs
+
+    // Step 3: Milestones
     milestones: [{ title: '', dueDate: '' }],
-    features: ['messaging', 'file_sharing', 'task_board'],
+
+    // Step 4: Features
+    features: ['messaging', 'file_sharing', 'task_board'], // always include core features
+
+    // Metadata
+    searchCA: '',
+    searchDS: '',
   });
 
+  // Load available users on mount
   useEffect(() => {
-    adminAPI.getUsers({ status: 'active' })
-      .then((r) => setEnvUsers(r.data.users || []))
-      .catch(() => {});
-  }, []);
+    const loadUsers = async () => {
+      try {
+        setLoadingUsers(true);
+        // Fetch CA members from public endpoint
+        const caRes = await api.get('/projects/team/users', { params: { status: 'active', team: 'CA' } });
+        const caList = (caRes.data.users || [])
+          .filter((u) => u.id !== user.id) // Exclude initiator
+          .sort((a, b) => a.full_name.localeCompare(b.full_name));
+        setCaUsers(caList);
 
-  const update = (field, val) => setForm((p) => ({ ...p, [field]: val }));
+        // Fetch DS members from public endpoint
+        const dsRes = await api.get('/projects/team/users', { params: { status: 'active', team: 'DS' } });
+        const dsList = (dsRes.data.users || [])
+          .filter((u) => u.id !== user.id) // Exclude initiator
+          .sort((a, b) => a.full_name.localeCompare(b.full_name));
+        setDsUsers(dsList);
+      } catch (err) {
+        setError('Failed to load team members. Please try again.');
+        console.error(err);
+      } finally {
+        setLoadingUsers(false);
+      }
+    };
+    loadUsers();
+  }, [user.id]);
 
-  const validateStep = () => {
-    if (step === 0) {
-      if (!form.name.trim()) return 'Project name is required.';
-      if (!form.description.trim()) return 'Description is required.';
-      if (!form.objectives.trim()) return 'Objectives are required.';
-    }
-    if (step === 1) {
-      if (form.members.length < 1) return 'Select at least one additional team member.';
-      const teams = new Set(envUsers.filter((u) => form.members.includes(u.id)).map((u) => u.team));
-      if (!teams.has('CA') || !teams.has('DS')) return 'Project must include at least one CA and one DS member.';
-    }
-    if (step === 2) {
-      if (!form.startDate || !form.endDate) return 'Start and end dates are required.';
-      if (new Date(form.endDate) <= new Date(form.startDate)) return 'End date must be after start date.';
-      if (form.milestones.some((m) => !m.title || !m.dueDate)) return 'All milestones need a title and date.';
-    }
-    return '';
+  // Update form
+  const updateForm = (field, value) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const nextStep = () => {
-    const err = validateStep();
-    if (err) { setError(err); return; }
-    setError('');
-    setStep((s) => s + 1);
+  // Milestone helpers
+  const addMilestone = () => {
+    updateForm('milestones', [...form.milestones, { title: '', dueDate: '' }]);
   };
 
-  const submit = async () => {
-    const err = validateStep();
-    if (err) { setError(err); return; }
-    setLoading(true);
-    setError('');
-    try {
-      await projectsAPI.create({
-        ...form,
-        members: [...new Set([...form.members, user.id])],
-      });
-      setSuccess(true);
-    } catch (e) {
-      setError(e.response?.data?.message || 'Failed to submit project.');
-    } finally {
-      setLoading(false);
+  const updateMilestone = (index, field, value) => {
+    const newMilestones = [...form.milestones];
+    newMilestones[index] = { ...newMilestones[index], [field]: value };
+    updateForm('milestones', newMilestones);
+  };
+
+  const removeMilestone = (index) => {
+    if (form.milestones.length > 1) {
+      updateForm('milestones', form.milestones.filter((_, i) => i !== index));
     }
   };
 
-  const toggleMember = (id) => {
-    update('members', form.members.includes(id)
-      ? form.members.filter((m) => m !== id)
-      : [...form.members, id]
-    );
-  };
-
+  // Feature toggle
   const toggleFeature = (key) => {
-    const locked = FEATURES.find((f) => f.key === key)?.locked;
-    if (locked) return;
-    update('features', form.features.includes(key)
-      ? form.features.filter((f) => f !== key)
-      : [...form.features, key]
+    const locked = CORE_FEATURES.find((f) => f.key === key);
+    if (locked) return; // Can't toggle core features
+    const hasFeature = form.features.includes(key);
+    updateForm(
+      'features',
+      hasFeature
+        ? form.features.filter((f) => f !== key)
+        : [...form.features, key]
     );
   };
 
-  const addMilestone = () => update('milestones', [...form.milestones, { title: '', dueDate: '' }]);
-  const updateMilestone = (i, field, val) => {
-    const ms = [...form.milestones];
-    ms[i][field] = val;
-    update('milestones', ms);
-  };
-  const removeMilestone = (i) => {
-    if (form.milestones.length === 1) return;
-    update('milestones', form.milestones.filter((_, idx) => idx !== i));
+  // Team member toggle
+  const toggleCAMember = (userId) => {
+    const hasMember = form.caMembers.includes(userId);
+    updateForm(
+      'caMembers',
+      hasMember
+        ? form.caMembers.filter((id) => id !== userId)
+        : [...form.caMembers, userId]
+    );
   };
 
+  const toggleDSMember = (userId) => {
+    const hasMember = form.dsMembers.includes(userId);
+    updateForm(
+      'dsMembers',
+      hasMember
+        ? form.dsMembers.filter((id) => id !== userId)
+        : [...form.dsMembers, userId]
+    );
+  };
+
+  // Validate step before proceeding
+  const validateStep = () => {
+    setError('');
+
+    if (step === 1) {
+      // Validate details
+      if (!form.name.trim()) {
+        setError('Project name is required.');
+        return false;
+      }
+      if (form.name.trim().length < 3) {
+        setError('Project name must be at least 3 characters.');
+        return false;
+      }
+      if (!form.description.trim()) {
+        setError('Description is required.');
+        return false;
+      }
+      if (!form.objectives.trim()) {
+        setError('Objectives are required.');
+        return false;
+      }
+      if (!form.startDate) {
+        setError('Start date is required.');
+        return false;
+      }
+      if (!form.endDate) {
+        setError('End date is required.');
+        return false;
+      }
+      const start = new Date(form.startDate);
+      const end = new Date(form.endDate);
+      if (end <= start) {
+        setError('End date must be after start date.');
+        return false;
+      }
+      return true;
+    }
+
+    if (step === 2) {
+      // Validate team selection
+      if (form.caMembers.length === 0) {
+        setError('Select at least one CA team member.');
+        return false;
+      }
+      if (form.dsMembers.length === 0) {
+        setError('Select at least one DS team member.');
+        return false;
+      }
+      return true;
+    }
+
+    if (step === 3) {
+      // Validate milestones
+      const hasIncompleteMilestone = form.milestones.some((m) => !m.title.trim() || !m.dueDate);
+      if (hasIncompleteMilestone) {
+        setError('All milestones must have a title and due date.');
+        return false;
+      }
+      // Validate milestone dates are within project timeline
+      const start = new Date(form.startDate);
+      const end = new Date(form.endDate);
+      const invalidMilestone = form.milestones.find((m) => {
+        const mDate = new Date(m.dueDate);
+        return mDate < start || mDate > end;
+      });
+      if (invalidMilestone) {
+        setError('All milestone dates must be between project start and end date.');
+        return false;
+      }
+      return true;
+    }
+
+    if (step === 4) {
+      // Features - always valid (at least core features are included)
+      return true;
+    }
+
+    if (step === 5) {
+      // Review - final check
+      return true;
+    }
+
+    return true;
+  };
+
+  const handleNext = () => {
+    if (!validateStep()) return;
+    if (step < 5) {
+      setStep(step + 1);
+    }
+  };
+
+  const handlePrevious = () => {
+    if (step > 1) {
+      setStep(step - 1);
+      setError('');
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!validateStep()) return;
+    setSubmitting(true);
+    setError('');
+
+    try {
+      const projectData = {
+        name: form.name.trim(),
+        description: form.description.trim(),
+        objectives: form.objectives.trim(),
+        startDate: form.startDate,
+        endDate: form.endDate,
+        milestones: form.milestones.map((m) => ({ title: m.title.trim(), dueDate: m.dueDate })),
+        features: form.features,
+        caMembers: form.caMembers,
+        dsMembers: form.dsMembers,
+      };
+
+      await projectsAPI.create(projectData);
+      setSuccess(true);
+    } catch (err) {
+      console.error('Project creation error:', err);
+      setError(err.response?.data?.message || 'Failed to create project. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Success screen
   if (success) {
     return (
       <div className="modal-overlay" onClick={onClose}>
-        <div className="modal" onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
+        <div className="modal" onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center', maxWidth: 400 }}>
           <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🚀</div>
-          <h2 className="syne" style={{ fontSize: '1.4rem', marginBottom: '0.5rem' }}>Project Submitted!</h2>
-          <p style={{ color: 'var(--muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
-            Your project proposal has been sent to the admin for approval.<br />
-            You'll be notified once it's reviewed.
+          <h2 className="syne" style={{ fontSize: '1.4rem', marginBottom: '0.75rem', fontWeight: 700 }}>
+            Project Submitted!
+          </h2>
+          <p style={{ color: 'var(--muted)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: '1.5rem' }}>
+            We've sent <strong>{form.name}</strong> to your admin team for approval.
+            <br />
+            You'll receive a notification once it's reviewed.
           </p>
-          <div className="modal-footer" style={{ justifyContent: 'center' }}>
-            <button className="btn btn-primary" onClick={() => { onClose(); navigate('/projects'); }}>
-              View My Projects
+          <div className="modal-footer" style={{ justifyContent: 'center', gap: '0.75rem' }}>
+            <button className="btn btn-ghost" onClick={onClose}>
+              Close
+            </button>
+            <button 
+              className="btn btn-primary" 
+              onClick={() => {
+                onClose();
+                navigate('/projects');
+              }}
+            >
+              View My Projects →
             </button>
           </div>
         </div>
@@ -134,154 +313,575 @@ const NewProjectModal = ({ onClose }) => {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 600 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 700, maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
           <div>
             <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--ca)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.3rem' }}>
-              Step {step + 1} of 4 · {steps[step]}
+              Step {step} of 5
             </div>
-            <h2 className="modal-title">Start a New Project</h2>
+            <h2 className="modal-title" style={{ fontSize: '1.3rem', fontWeight: 700 }}>
+              {step === 1 && '📋 Project Details'}
+              {step === 2 && '👥 Select Team Members'}
+              {step === 3 && '📅 Timeline & Milestones'}
+              {step === 4 && '⚙️ Workspace Features'}
+              {step === 5 && '✅ Review & Submit'}
+            </h2>
           </div>
-          <button onClick={onClose} style={{ fontSize: '1.3rem', color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1 }}>×</button>
+          <button 
+            onClick={onClose} 
+            style={{ fontSize: '1.4rem', color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1 }}
+          >
+            ×
+          </button>
         </div>
 
-        {/* Step indicator */}
+        {/* Progress bar */}
         <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1.75rem' }}>
-          {steps.map((s, i) => (
-            <div key={s} style={{
-              flex: 1, height: 4, borderRadius: 2,
-              background: i <= step ? 'var(--ca)' : 'var(--border)',
-              transition: 'background 0.3s'
-            }} />
+          {[1, 2, 3, 4, 5].map((s) => (
+            <div 
+              key={s} 
+              style={{
+                flex: 1,
+                height: 4,
+                borderRadius: 2,
+                background: s <= step ? 'var(--ca)' : 'var(--border)',
+                transition: 'background 0.3s',
+              }}
+            />
           ))}
         </div>
 
-        {error && <div className="alert alert-error" style={{ marginBottom: '1rem' }}>⚠️ {error}</div>}
+        {/* Error message */}
+        {error && (
+          <div style={{
+            padding: '0.75rem 1rem',
+            background: 'var(--danger-light)',
+            border: '1.5px solid var(--danger)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--danger)',
+            fontSize: '0.85rem',
+            marginBottom: '1rem',
+          }}>
+            ⚠️ {error}
+          </div>
+        )}
 
-        {/* ── Step 0: Details ── */}
-        {step === 0 && (
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* STEP 1: DETAILS */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {step === 1 && (
           <div>
             <div className="form-group">
               <label className="form-label">Project Name *</label>
-              <input className="form-input" value={form.name} onChange={(e) => update('name', e.target.value)} placeholder="e.g. Revenue Forecast Model Q2 2025" />
+              <input
+                className="form-input"
+                type="text"
+                value={form.name}
+                onChange={(e) => updateForm('name', e.target.value)}
+                placeholder="e.g., Revenue Forecast Model Q2 2025"
+                maxLength={200}
+              />
+              <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: '0.3rem' }}>
+                {form.name.length}/200 characters
+              </div>
             </div>
+
+            <div className="form-group">
+              <label className="form-label">Domain *</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {ProjectDomain.map((d) => (
+                  <button
+                    key={d.key}
+                    onClick={() => updateForm('domain', d.key)}
+                    style={{
+                      flex: 1,
+                      padding: '0.75rem',
+                      border: `1.5px solid ${form.domain === d.key ? 'var(--ca)' : 'var(--border)'}`,
+                      background: form.domain === d.key ? 'var(--ca-light)' : 'white',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.82rem',
+                      fontWeight: form.domain === d.key ? 600 : 500,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="form-group">
               <label className="form-label">Description *</label>
-              <textarea className="form-input" rows={3} value={form.description} onChange={(e) => update('description', e.target.value)} placeholder="What is this project about?" style={{ resize: 'vertical' }} />
+              <textarea
+                className="form-input"
+                value={form.description}
+                onChange={(e) => updateForm('description', e.target.value)}
+                placeholder="What is this project about? What context should team members know?"
+                rows={3}
+                style={{ resize: 'vertical' }}
+              />
             </div>
+
             <div className="form-group">
               <label className="form-label">Objectives *</label>
-              <textarea className="form-input" rows={3} value={form.objectives} onChange={(e) => update('objectives', e.target.value)} placeholder="What are the key goals and deliverables?" style={{ resize: 'vertical' }} />
+              <textarea
+                className="form-input"
+                value={form.objectives}
+                onChange={(e) => updateForm('objectives', e.target.value)}
+                placeholder="What are the key goals and expected outputs?"
+                rows={3}
+                style={{ resize: 'vertical' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="form-group">
+                <label className="form-label">Start Date *</label>
+                <input
+                  className="form-input"
+                  type="date"
+                  value={form.startDate}
+                  onChange={(e) => updateForm('startDate', e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">End Date *</label>
+                <input
+                  className="form-input"
+                  type="date"
+                  value={form.endDate}
+                  onChange={(e) => updateForm('endDate', e.target.value)}
+                  min={form.startDate}
+                />
+              </div>
             </div>
           </div>
         )}
 
-        {/* ── Step 1: Team ── */}
-        {step === 1 && (
-          <div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1rem' }}>
-              Select CA and DS members. You are automatically included as the initiator.
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', maxHeight: 300, overflowY: 'auto' }}>
-              {envUsers.filter((u) => u.id !== user.id).map((u) => (
-                <label key={u.id} style={{
-                  display: 'flex', alignItems: 'center', gap: '0.65rem',
-                  padding: '0.65rem 0.85rem',
-                  border: `1.5px solid ${form.members.includes(u.id) ? (u.team === 'CA' ? 'var(--ca)' : 'var(--ds)') : 'var(--border)'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  background: form.members.includes(u.id) ? (u.team === 'CA' ? 'var(--ca-light)' : 'var(--ds-light)') : 'white',
-                  cursor: 'pointer', transition: 'all 0.15s',
-                }}>
-                  <input type="checkbox" checked={form.members.includes(u.id)} onChange={() => toggleMember(u.id)} style={{ display: 'none' }} />
-                  <div className={`avatar avatar-sm avatar-${u.team.toLowerCase()}`}>{u.avatar_initials || u.avatarInitials || u.team[0]}</div>
-                  <div>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 600 }}>{u.full_name || u.fullName}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>{u.team} · {u.designation}</div>
-                  </div>
-                </label>
-              ))}
-            </div>
-            {form.members.length > 0 && (
-              <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.75rem' }}>
-                {form.members.length} member{form.members.length > 1 ? 's' : ''} selected (+ you)
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* ── Step 2: Timeline ── */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* STEP 2: TEAM SELECTION */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
         {step === 2 && (
           <div>
-            <div className="form-row" style={{ marginBottom: '1.25rem' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Start Date *</label>
-                <input type="date" className="form-input" value={form.startDate} onChange={(e) => update('startDate', e.target.value)} min={new Date().toISOString().split('T')[0]} />
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">End Date *</label>
-                <input type="date" className="form-input" value={form.endDate} onChange={(e) => update('endDate', e.target.value)} min={form.startDate} />
-              </div>
-            </div>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
-                <label className="form-label" style={{ marginBottom: 0 }}>Milestones *</label>
-                <button onClick={addMilestone} className="btn btn-ghost btn-sm">+ Add</button>
-              </div>
-              {form.milestones.map((m, i) => (
-                <div key={i} className="form-row" style={{ marginBottom: '0.5rem', alignItems: 'center' }}>
-                  <input className="form-input" placeholder={`Milestone ${i + 1} title`} value={m.title} onChange={(e) => updateMilestone(i, 'title', e.target.value)} />
-                  <div style={{ display: 'flex', gap: '0.4rem' }}>
-                    <input type="date" className="form-input" value={m.dueDate} onChange={(e) => updateMilestone(i, 'dueDate', e.target.value)} />
-                    {form.milestones.length > 1 && (
-                      <button onClick={() => removeMilestone(i)} style={{ color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', flexShrink: 0 }}>×</button>
-                    )}
-                  </div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1.25rem' }}>
+              Select at least one CA member and one DS member. You ({user.fullName}) are auto-included as the initiator.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+              {/* CA Team Panel */}
+              <div>
+                <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.75rem', color: 'var(--ca)' }}>
+                  Chartered Accountants (CA)
+                </h4>
+                <input
+                  className="form-input"
+                  type="text"
+                  placeholder="Search CA members..."
+                  value={form.searchCA}
+                  onChange={(e) => updateForm('searchCA', e.target.value)}
+                  style={{ marginBottom: '0.75rem' }}
+                />
+                <div style={{
+                  border: '1.5px solid var(--border)',
+                  borderRadius: 'var(--radius-md)',
+                  maxHeight: 280,
+                  overflowY: 'auto',
+                  padding: '0.5rem',
+                }}>
+                  {loadingUsers ? (
+                    <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}>
+                      Loading...
+                    </div>
+                  ) : caUsers.filter((u) => 
+                    u.full_name.toLowerCase().includes(form.searchCA.toLowerCase())
+                  ).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                      No CA members available
+                    </div>
+                  ) : (
+                    caUsers
+                      .filter((u) => u.full_name.toLowerCase().includes(form.searchCA.toLowerCase()))
+                      .map((u) => (
+                        <label
+                          key={u.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.65rem',
+                            borderRadius: '0.4rem',
+                            cursor: 'pointer',
+                            background: form.caMembers.includes(u.id) ? 'var(--ca-light)' : 'transparent',
+                            transition: 'background 0.15s',
+                            userSelect: 'none',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={form.caMembers.includes(u.id)}
+                            onChange={() => toggleCAMember(u.id)}
+                            style={{ cursor: 'pointer' }}
+                          />
+                          <div className="avatar avatar-sm avatar-ca">{u.avatar_initials || 'CA'}</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.82rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {u.full_name}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
+                              {u.designation}
+                            </div>
+                          </div>
+                        </label>
+                      ))
+                  )}
                 </div>
-              ))}
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
+                  Selected: {form.caMembers.length} member{form.caMembers.length !== 1 ? 's' : ''}
+                </div>
+              </div>
+
+              {/* DS Team Panel */}
+              <div>
+                <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.75rem', color: 'var(--ds)' }}>
+                  Data Scientists (DS)
+                </h4>
+                <input
+                  className="form-input"
+                  type="text"
+                  placeholder="Search DS members..."
+                  value={form.searchDS}
+                  onChange={(e) => updateForm('searchDS', e.target.value)}
+                  style={{ marginBottom: '0.75rem' }}
+                />
+                <div style={{
+                  border: '1.5px solid var(--border)',
+                  borderRadius: 'var(--radius-md)',
+                  maxHeight: 280,
+                  overflowY: 'auto',
+                  padding: '0.5rem',
+                }}>
+                  {loadingUsers ? (
+                    <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}>
+                      Loading...
+                    </div>
+                  ) : dsUsers.filter((u) => 
+                    u.full_name.toLowerCase().includes(form.searchDS.toLowerCase())
+                  ).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                      No DS members available
+                    </div>
+                  ) : (
+                    dsUsers
+                      .filter((u) => u.full_name.toLowerCase().includes(form.searchDS.toLowerCase()))
+                      .map((u) => (
+                        <label
+                          key={u.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.65rem',
+                            borderRadius: '0.4rem',
+                            cursor: 'pointer',
+                            background: form.dsMembers.includes(u.id) ? 'var(--ds-light)' : 'transparent',
+                            transition: 'background 0.15s',
+                            userSelect: 'none',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={form.dsMembers.includes(u.id)}
+                            onChange={() => toggleDSMember(u.id)}
+                            style={{ cursor: 'pointer' }}
+                          />
+                          <div className="avatar avatar-sm avatar-ds">{u.avatar_initials || 'DS'}</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.82rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {u.full_name}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
+                              {u.designation}
+                            </div>
+                          </div>
+                        </label>
+                      ))
+                  )}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
+                  Selected: {form.dsMembers.length} member{form.dsMembers.length !== 1 ? 's' : ''}
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ── Step 3: Features ── */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* STEP 3: TIMELINE & MILESTONES */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
         {step === 3 && (
           <div>
             <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1rem' }}>
-              Select the tools to enable in the shared workspace.
+              Define project phases and milestone dates. All dates must fall within the project timeline.
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
-              {FEATURES.map((f) => (
-                <div
-                  key={f.key}
-                  onClick={() => toggleFeature(f.key)}
-                  style={{
-                    padding: '0.8rem 1rem',
-                    border: `1.5px solid ${form.features.includes(f.key) ? 'var(--ca)' : 'var(--border)'}`,
-                    borderRadius: 'var(--radius-sm)',
-                    background: form.features.includes(f.key) ? 'var(--ca-light)' : 'white',
-                    cursor: f.locked ? 'default' : 'pointer',
-                    opacity: f.locked ? 0.65 : 1,
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{f.label}</div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.2rem' }}>{f.desc}</div>
+
+            <div style={{ marginBottom: '1rem', padding: '0.75rem', background: 'var(--paper)', borderRadius: 'var(--radius-md)', fontSize: '0.8rem', color: 'var(--muted)' }}>
+              <strong>Project Timeline:</strong> {new Date(form.startDate).toLocaleDateString()} — {new Date(form.endDate).toLocaleDateString()}
+            </div>
+
+            <div>
+              {form.milestones.map((milestone, idx) => (
+                <div key={idx} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto auto', gap: '0.5rem', alignItems: 'end', marginBottom: '0.75rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', fontWeight: 600, width: 30, textAlign: 'center' }}>
+                    {idx + 1}
+                  </div>
+                  <input
+                    className="form-input"
+                    type="text"
+                    value={milestone.title}
+                    onChange={(e) => updateMilestone(idx, 'title', e.target.value)}
+                    placeholder={`Phase ${idx + 1} name (e.g., Data Collection)`}
+                  />
+                  <input
+                    className="form-input"
+                    type="date"
+                    value={milestone.dueDate}
+                    onChange={(e) => updateMilestone(idx, 'dueDate', e.target.value)}
+                    min={form.startDate}
+                    max={form.endDate}
+                    style={{ width: 150 }}
+                  />
+                  {form.milestones.length > 1 && (
+                    <button
+                      onClick={() => removeMilestone(idx)}
+                      style={{
+                        padding: '0.5rem 0.75rem',
+                        background: 'var(--danger-light)',
+                        border: '1.5px solid var(--danger)',
+                        borderRadius: 'var(--radius-sm)',
+                        color: 'var(--danger)',
+                        cursor: 'pointer',
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
               ))}
+            </div>
+
+            <button
+              onClick={addMilestone}
+              style={{
+                padding: '0.65rem 1rem',
+                background: 'var(--ca-light)',
+                border: '1.5px dashed var(--ca)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--ca)',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                marginTop: '0.5rem',
+                transition: 'all 0.15s',
+              }}
+            >
+              + Add Milestone
+            </button>
+          </div>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* STEP 4: FEATURES */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {step === 4 && (
+          <div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1.25rem' }}>
+              Core workspace features are always included. Select additional optional features for this project.
+            </p>
+
+            {/* Core Features - Always Included */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
+                ✓ Always Included
+              </h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem' }}>
+                {CORE_FEATURES.map((feat) => (
+                  <div
+                    key={feat.key}
+                    style={{
+                      padding: '0.85rem',
+                      border: '1.5px solid var(--border)',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'white',
+                      opacity: 0.7,
+                    }}
+                  >
+                    <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>✓ {feat.label}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.3rem' }}>
+                      {feat.desc}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Optional Features */}
+            <div>
+              <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
+                Optional Features
+              </h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem' }}>
+                {OPTIONAL_FEATURES.map((feat) => {
+                  const isSelected = form.features.includes(feat.key);
+                  return (
+                    <button
+                      key={feat.key}
+                      onClick={() => toggleFeature(feat.key)}
+                      style={{
+                        padding: '0.85rem',
+                        border: `1.5px solid ${isSelected ? 'var(--ca)' : 'var(--border)'}`,
+                        borderRadius: 'var(--radius-md)',
+                        background: isSelected ? 'var(--ca-light)' : 'white',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <div style={{ fontSize: '0.9rem', fontWeight: 600, color: isSelected ? 'var(--ca)' : 'inherit' }}>
+                        {isSelected ? '✓ ' : ''}{feat.label}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.3rem' }}>
+                        {feat.desc}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
 
-        {/* Footer buttons */}
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={step === 0 ? onClose : () => { setError(''); setStep((s) => s - 1); }}>
-            {step === 0 ? 'Cancel' : '← Back'}
-          </button>
-          {step < 3 ? (
-            <button className="btn btn-ca" onClick={nextStep}>Continue →</button>
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* STEP 5: REVIEW & SUBMIT */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {step === 5 && (
+          <div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1.25rem' }}>
+              Review your project details before submitting for admin approval.
+            </p>
+
+            {/* Project Details */}
+            <div style={{ marginBottom: '1.25rem', padding: '1rem', background: 'var(--paper)', borderRadius: 'var(--radius-md)' }}>
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.65rem' }}>Project Overview</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '0.5rem 1rem', fontSize: '0.85rem' }}>
+                <strong>Name:</strong>
+                <div>{form.name}</div>
+                <strong>Domain:</strong>
+                <div>{ProjectDomain.find((d) => d.key === form.domain)?.label}</div>
+                <strong>Timeline:</strong>
+                <div>
+                  {new Date(form.startDate).toLocaleDateString()} —{' '}
+                  {new Date(form.endDate).toLocaleDateString()}
+                </div>
+                <strong>Description:</strong>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{form.description}</div>
+                <strong>Objectives:</strong>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{form.objectives}</div>
+              </div>
+            </div>
+
+            {/* Team */}
+            <div style={{ marginBottom: '1.25rem', padding: '1rem', background: 'var(--paper)', borderRadius: 'var(--radius-md)' }}>
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.65rem' }}>Team Members</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--ca)', marginBottom: '0.5rem' }}>CA: {form.caMembers.length + 1}</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                    <div>{user.fullName} (You)</div>
+                    {form.caMembers.map((id) => {
+                      const u = caUsers.find((u) => u.id === id);
+                      return u ? <div key={id}>{u.full_name}</div> : null;
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--ds)', marginBottom: '0.5rem' }}>DS: {form.dsMembers.length}</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                    {form.dsMembers.map((id) => {
+                      const u = dsUsers.find((u) => u.id === id);
+                      return u ? <div key={id}>{u.full_name}</div> : null;
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Milestones */}
+            <div style={{ marginBottom: '1.25rem', padding: '1rem', background: 'var(--paper)', borderRadius: 'var(--radius-md)' }}>
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.65rem' }}>Milestones ({form.milestones.length})</h4>
+              <div style={{ fontSize: '0.85rem' }}>
+                {form.milestones.map((m, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.4rem', marginBottom: '0.4rem', borderBottom: '1px solid var(--border)' }}>
+                    <div>{m.title}</div>
+                    <div style={{ color: 'var(--muted)' }}>{new Date(m.dueDate).toLocaleDateString()}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Features */}
+            <div style={{ padding: '1rem', background: 'var(--paper)', borderRadius: 'var(--radius-md)' }}>
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.65rem' }}>Enabled Features</h4>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', fontSize: '0.8rem' }}>
+                {form.features.map((feat) => {
+                  const feature = ALL_FEATURES.find((f) => f.key === feat);
+                  return feature ? (
+                    <span
+                      key={feat}
+                      style={{
+                        padding: '0.3rem 0.65rem',
+                        background: 'var(--ca-light)',
+                        color: 'var(--ca)',
+                        borderRadius: '99px',
+                        fontWeight: 500,
+                      }}
+                    >
+                      {feature.label}
+                    </span>
+                  ) : null;
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Footer with navigation buttons */}
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '2rem', justifyContent: 'flex-end' }}>
+          {step > 1 && (
+            <button className="btn btn-ghost" onClick={handlePrevious}>
+              ← Back
+            </button>
+          )}
+          {step < 5 ? (
+            <button 
+              className="btn btn-primary" 
+              onClick={handleNext}
+              disabled={submitting}
+            >
+              Next →
+            </button>
           ) : (
-            <button className="btn btn-ca" onClick={submit} disabled={loading}>
-              {loading ? <><span className="spinner" />Submitting...</> : 'Submit for Approval 🚀'}
+            <button
+              className="btn btn-primary"
+              onClick={handleSubmit}
+              disabled={submitting}
+              style={{ opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}
+            >
+              {submitting ? 'Submitting...' : 'Submit Project'}
             </button>
           )}
         </div>

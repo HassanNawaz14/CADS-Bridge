@@ -12,27 +12,30 @@ const Workspace = () => {
   const [files, setFiles] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [msgInput, setMsgInput] = useState('');
-  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks'
+  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history'
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notMember, setNotMember] = useState(false);
+  const [history, setHistory] = useState([]);
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [pRes, mRes, fRes, tRes] = await Promise.all([
+        const [pRes, mRes, fRes, tRes, hRes] = await Promise.all([
           projectsAPI.get(id),
           workspaceAPI.getMessages(id),
           workspaceAPI.getFiles(id),
           tasksAPI.list({ projectId: id }),
+          projectsAPI.history(id),
         ]);
         setProject(pRes.data.project);
         setMessages(mRes.data.messages || []);
         setFiles(fRes.data.files || []);
         setTasks(tRes.data.tasks || []);
+        setHistory(hRes.data.history || []);
       } catch (e) {
         if (e.response?.status === 403) setNotMember(true);
       }
@@ -134,9 +137,9 @@ const Workspace = () => {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1rem' }}>
-        {['chat', 'files', 'tasks'].map((t) => (
+        {['chat', 'files', 'tasks', 'history'].map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}>
-            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : `✅ Tasks (${tasks.length})`}
+            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : '📜 History'}
           </button>
         ))}
       </div>
@@ -266,6 +269,48 @@ const Workspace = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* History */}
+      {tab === 'history' && (
+        <div>
+          {history.length === 0 ? (
+            <div className="empty-state" style={{ padding: '4rem' }}>
+              <div className="empty-icon">📜</div>
+              <p>No history yet.</p>
+            </div>
+          ) : (
+            <div className="card">
+              {history.map((h, i) => (
+                <div key={i} style={{ padding: '0.85rem 1.25rem', borderBottom: i < history.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--muted)' }}>
+                      {h.change_type.charAt(0).toUpperCase() + h.change_type.slice(1)}
+                    </span>
+                    {h.changed_by_name && (
+                      <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
+                        by {h.changed_by_name} ({h.changed_by_team})
+                      </span>
+                    )}
+                    <span style={{ fontSize: '0.7rem', color: 'var(--muted)', marginLeft: 'auto' }}>
+                      {new Date(h.changed_at).toLocaleString()}
+                    </span>
+                  </div>
+                  {h.field_name && (
+                    <div style={{ fontSize: '0.8rem', marginBottom: '0.3rem' }}>
+                      <strong>{h.field_name}:</strong> {h.old_value || '–'} → {h.new_value || '–'}
+                    </div>
+                  )}
+                  {h.change_note && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--muted)', fontStyle: 'italic' }}>
+                      {h.change_note}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </DashboardLayout>
