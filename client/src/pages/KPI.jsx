@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
 import { kpiAPI } from '../services/api';
@@ -23,7 +23,7 @@ const KPIPage = () => {
   const [insight, setInsight] = useState({ pairKey: '', note: '' });
   const [rec, setRec] = useState({ userId: '', recommendationText: '', advancementType: 'Promotion', evidence: '' });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await kpiAPI.get({ teamView, projectId: projectId || undefined });
@@ -31,11 +31,11 @@ const KPIPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [teamView, projectId]);
 
-  useEffect(() => { load(); }, [teamView, projectId]);
+  useEffect(() => { load(); }, [load]);
 
-  const kpi = data?.kpi || [];
+  const kpi = useMemo(() => data?.kpi || [], [data]);
   const projects = data?.projects || [];
   const performance = data?.performance || [];
   const recommendations = data?.recommendations || [];

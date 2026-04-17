@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { projectsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -103,12 +103,12 @@ const NewProjectModal = ({ onClose }) => {
   // Auto-save to localStorage
   const autoSaveKey = `project-draft-${user.id}`;
   
-  const saveDraft = () => {
+  const saveDraft = useCallback(() => {
     const draft = { ...form, lastSaved: new Date().toISOString() };
     localStorage.setItem(autoSaveKey, JSON.stringify(draft));
-  };
+  }, [form, autoSaveKey]);
 
-  const loadDraft = () => {
+  const loadDraft = useCallback(() => {
     const saved = localStorage.getItem(autoSaveKey);
     if (saved) {
       try {
@@ -126,7 +126,7 @@ const NewProjectModal = ({ onClose }) => {
       }
     }
     return false;
-  };
+  }, [autoSaveKey]);
 
   const clearDraft = () => {
     localStorage.removeItem(autoSaveKey);
@@ -138,7 +138,7 @@ const NewProjectModal = ({ onClose }) => {
     if (hasDraft) {
       setError('Draft loaded from your previous session. You can continue where you left off.');
     }
-  }, []);
+  }, [loadDraft]);
 
   // Auto-save on form changes (debounced)
   useEffect(() => {
@@ -148,7 +148,7 @@ const NewProjectModal = ({ onClose }) => {
       }
     }, 2000); // Save after 2 seconds of inactivity
     return () => clearTimeout(timer);
-  }, [form]);
+  }, [form, saveDraft]);
 
   // Milestone helpers
   const addMilestone = () => {
