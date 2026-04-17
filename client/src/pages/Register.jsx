@@ -23,7 +23,8 @@ const Register = () => {
       setEnv(res.data.environment);
       setStep(1);
     } catch (e) {
-      setError(e.response?.data?.message || 'Invalid environment code.');
+      setError(e.response?.data?.message
+        || (e.request ? 'Unable to reach the backend server. Please ensure it is running.' : 'Invalid environment code.'));
     } finally { setLoading(false); }
   };
 
@@ -39,7 +40,8 @@ const Register = () => {
       await authAPI.register({ ...form });
       setStep(3);
     } catch (e) {
-      setError(e.response?.data?.message || 'Registration failed.');
+      setError(e.response?.data?.message
+        || (e.request ? 'Unable to reach the backend server. Please ensure it is running.' : 'Registration failed.'));
     } finally { setLoading(false); }
   };
 
@@ -127,26 +129,26 @@ const Register = () => {
                   Your team determines your dashboard, permissions, and role.
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-                  {['CA', 'DS', 'NA'].map((t) => (
+                  {['CA', 'DS'].map((t) => (
                     <div
                       key={t}
                       onClick={() => update('team', t)}
                       style={{
                         padding: '1.5rem 0.5rem',
-                        border: `2px solid ${form.team === t ? (t === 'CA' ? 'var(--ca)' : t === 'DS' ? 'var(--ds)' : 'var(--primary)') : 'var(--border)'}`,
+                        border: `2px solid ${form.team === t ? (t === 'CA' ? 'var(--ca)' : 'var(--ds)') : 'var(--border)'}`,
                         borderRadius: 'var(--radius-md)',
-                        background: form.team === t ? (t === 'CA' ? 'var(--ca-light)' : t === 'DS' ? 'var(--ds-light)' : 'rgba(99, 102, 241, 0.1)') : 'white',
+                        background: form.team === t ? (t === 'CA' ? 'var(--ca-light)' : 'var(--ds-light)') : 'white',
                         cursor: 'pointer',
                         textAlign: 'center',
                         transition: 'all 0.15s',
                       }}
                     >
-                      <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{t === 'CA' ? '📒' : t === 'DS' ? '🔬' : '👑'}</div>
-                      <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.95rem', color: t === 'CA' ? 'var(--ca)' : t === 'DS' ? 'var(--ds)' : 'var(--primary)' }}>
-                        {t === 'CA' ? 'Chartered Accountant' : t === 'DS' ? 'Data Scientist' : 'Super Admin'}
+                      <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{t === 'CA' ? '📒' : '🔬'}</div>
+                      <div style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.95rem', color: t === 'CA' ? 'var(--ca)' : 'var(--ds)' }}>
+                        {t === 'CA' ? 'Chartered Accountant' : 'Data Scientist'}
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.3rem' }}>
-                        {t === 'CA' ? 'Financial analytics & compliance' : t === 'DS' ? 'Models & prediction pipelines' : 'Global environment management'}
+                        {t === 'CA' ? 'Financial analytics & compliance' : 'Models & prediction pipelines'}
                       </div>
                     </div>
                   ))}

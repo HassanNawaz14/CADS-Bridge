@@ -36,7 +36,8 @@ export const AuthProvider = ({ children }) => {
     }
 
     const token = localStorage.getItem('accessToken');
-    const socketUrl = process.env.REACT_APP_API_URL || window.location.origin;
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    const socketUrl = process.env.REACT_APP_API_URL || (isLocalhost ? 'http://localhost:5000' : window.location.origin);
     const socket = io(socketUrl, {
       auth: { token },
       transports: ['websocket', 'polling'],

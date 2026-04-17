@@ -414,4 +414,91 @@ router.put('/kpi-thresholds/:metricKey', async (req, res) => {
   }
 });
 
+// ── Regulatory rules engine (3.4.4 / 3.7.3) ──────────────────────────────
+router.get('/regulatory-rules', async (req, res) => {
+  try {
+    const { projectId } = req.query;
+    let where = 'WHERE env_id = @envId';
+    const params = { envId: { type: sql.UniqueIdentifier, value: req.user.env_id } };
+    if (projectId) {
+      where += ' AND (project_id = @projectId OR project_id IS NULL)';
+      params.projectId = { type: sql.UniqueIdentifier, value: projectId };
+    }
+    const rules = await query(
+      `SELECT id, project_id, field_name, operator, threshold_value, severity, description, regulatory_reference, created_at
+       FROM regulatory_rules
+       ${where}
+       ORDER BY created_at DESC`,
+      params
+    );
+    res.json({ success: true, rules: rules.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch rules.' });
+  }
+});
+
+router.post('/regulatory-rules',
+  validate([
+    body('fieldName').trim().notEmpty().withMessage('fieldName is required.'),
+    body('operator').isIn(['GT', 'LT', 'EQ', 'NEQ']).withMessage('Invalid operator.'),
+    body('thresholdValue').isFloat().withMessage('thresholdValue must be numeric.'),
+    body('severity').isIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).withMessage('Invalid severity.'),
+    body('description').trim().notEmpty().withMessage('description is required.'),
+  ]),
+  async (req, res) => {
+    try {
+      const { projectId = null, fieldName, operator, thresholdValue, severity, description, regulatoryReference = null } = req.body;
+      await query(
+        `INSERT INTO regulatory_rules
+          (id, env_id, project_id, field_name, operator, threshold_value, severity, description, regulatory_reference, created_by)
+         VALUES
+          (NEWID(), @envId, @projectId, @fieldName, @operator, @thresholdValue, @severity, @description, @regRef, @createdBy)`,
+        {
+          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+          projectId: { type: sql.UniqueIdentifier, value: projectId },
+          fieldName: { type: sql.NVarChar(100), value: fieldName },
+          operator: { type: sql.NVarChar(10), value: operator },
+          thresholdValue: { type: sql.Decimal(18, 4), value: Number(thresholdValue) },
+          severity: { type: sql.NVarChar(10), value: severity },
+          description: { type: sql.NVarChar(sql.MAX), value: description },
+          regRef: { type: sql.NVarChar(255), value: regulatoryReference },
+          createdBy: { type: sql.UniqueIdentifier, value: req.user.id },
+        }
+      );
+      res.status(201).json({ success: true, message: 'Rule created.' });
+    } catch (err) {
+      res.status(500).json({ success: false, message: 'Failed to create rule.' });
+    }
+  }
+);
+
+router.get('/compliance-breaches', async (req, res) => {
+  try {
+    const { status, projectId } = req.query;
+    let where = 'WHERE b.env_id = @envId';
+    const params = { envId: { type: sql.UniqueIdentifier, value: req.user.env_id } };
+    if (status) {
+      where += ' AND b.status = @status';
+      params.status = { type: sql.NVarChar(20), value: status };
+    }
+    if (projectId) {
+      where += ' AND b.project_id = @projectId';
+      params.projectId = { type: sql.UniqueIdentifier, value: projectId };
+    }
+    const logs = await query(
+      `SELECT b.id, b.project_id, p.name as project_name, b.file_id, b.version_id, b.field_name, b.severity, b.description,
+              b.regulatory_reference, b.status, b.created_at, cu.full_name as created_by_name
+       FROM constraint_breach_logs b
+       JOIN projects p ON p.id = b.project_id
+       LEFT JOIN users cu ON cu.id = b.created_by
+       ${where}
+       ORDER BY b.created_at DESC`,
+      params
+    );
+    res.json({ success: true, breaches: logs.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch breach logs.' });
+  }
+});
+
 module.exports = router;

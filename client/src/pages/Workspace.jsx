@@ -12,30 +12,34 @@ const Workspace = () => {
   const [files, setFiles] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [msgInput, setMsgInput] = useState('');
-  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history'
+  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history' | 'breaches'
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notMember, setNotMember] = useState(false);
   const [history, setHistory] = useState([]);
+  const [breaches, setBreaches] = useState([]);
+  const [fileMeta, setFileMeta] = useState({ outputType: 'OTHER', changeNote: '', publish: false });
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [pRes, mRes, fRes, tRes, hRes] = await Promise.all([
+        const [pRes, mRes, fRes, tRes, hRes, bRes] = await Promise.all([
           projectsAPI.get(id),
           workspaceAPI.getMessages(id),
           workspaceAPI.getFiles(id),
           tasksAPI.list({ projectId: id }),
           projectsAPI.history(id),
+          workspaceAPI.getBreaches(id),
         ]);
         setProject(pRes.data.project);
         setMessages(mRes.data.messages || []);
         setFiles(fRes.data.files || []);
         setTasks(tRes.data.tasks || []);
         setHistory(hRes.data.history || []);
+        setBreaches(bRes.data.breaches || []);
       } catch (e) {
         if (e.response?.status === 403) setNotMember(true);
       }
@@ -81,7 +85,14 @@ const Workspace = () => {
     try {
       const form = new FormData();
       form.append('file', file);
+      form.append('outputType', fileMeta.outputType);
+      form.append('changeNote', fileMeta.changeNote);
+      form.append('publish', fileMeta.publish ? 'true' : 'false');
       await workspaceAPI.uploadFile(id, form);
+      if (fileMeta.publish) {
+        const bRes = await workspaceAPI.getBreaches(id);
+        setBreaches(bRes.data.breaches || []);
+      }
     } catch (e) {
       alert(e.response?.data?.message || 'Upload failed.');
     }
@@ -137,9 +148,9 @@ const Workspace = () => {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1rem' }}>
-        {['chat', 'files', 'tasks', 'history'].map((t) => (
+        {['chat', 'files', 'tasks', 'history', 'breaches'].map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}>
-            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : '📜 History'}
+            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : t === 'history' ? '📜 History' : `⚠️ Breaches (${breaches.filter((b) => b.status !== 'RESOLVED').length})`}
           </button>
         ))}
       </div>
@@ -191,6 +202,28 @@ const Workspace = () => {
       {/* Files */}
       {tab === 'files' && (
         <div>
+          <div className="card" style={{ marginBottom: '0.9rem', padding: '0.9rem 1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: '0.6rem', alignItems: 'end' }}>
+              <div>
+                <label className="form-label">Output Type</label>
+                <select className="form-input" value={fileMeta.outputType} onChange={(e) => setFileMeta((p) => ({ ...p, outputType: e.target.value }))}>
+                  <option>MODEL_REPORT</option>
+                  <option>FINANCIAL_ANALYSIS</option>
+                  <option>JOINT_SUMMARY</option>
+                  <option>RAW_DATA</option>
+                  <option>OTHER</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Change Note</label>
+                <input className="form-input" value={fileMeta.changeNote} onChange={(e) => setFileMeta((p) => ({ ...p, changeNote: e.target.value }))} placeholder="e.g., Updated with Q3 actuals." />
+              </div>
+              <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--muted)' }}>
+                <input type="checkbox" checked={fileMeta.publish} onChange={(e) => setFileMeta((p) => ({ ...p, publish: e.target.checked }))} />
+                Run pre-check
+              </label>
+            </div>
+          </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
             <input type="file" ref={fileInputRef} onChange={handleUpload} style={{ display: 'none' }} />
             <button className="btn btn-ca" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
@@ -230,10 +263,10 @@ const Workspace = () => {
       {/* Tasks */}
       {tab === 'tasks' && (
         <div>
-          {['todo', 'in_progress', 'done'].map((status) => {
+          {['todo', 'in_progress', 'in_review', 'done'].map((status) => {
             const statusTasks = tasks.filter((t) => t.status === status);
-            const labels = { todo: '📋 To Do', in_progress: '🔄 In Progress', done: '✅ Done' };
-            const nextStatus = { todo: 'in_progress', in_progress: 'done', done: null };
+            const labels = { todo: '📋 To Do', in_progress: '🔄 In Progress', in_review: '🕵️ In Review', done: '✅ Done' };
+            const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
             return (
               <div key={status} style={{ marginBottom: '1.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
@@ -261,7 +294,7 @@ const Workspace = () => {
                         className="btn btn-ghost btn-sm"
                         onClick={() => handleStatusChange(t.id, nextStatus[status])}
                       >
-                        {status === 'todo' ? 'Start →' : 'Done ✓'}
+                        {status === 'todo' ? 'Start →' : status === 'in_progress' ? 'Review →' : 'Done ✓'}
                       </button>
                     )}
                   </div>
@@ -307,6 +340,29 @@ const Workspace = () => {
                       {h.change_note}
                     </div>
                   )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'breaches' && (
+        <div>
+          {breaches.length === 0 ? (
+            <div className="empty-state" style={{ padding: '4rem' }}>
+              <div className="empty-icon">✅</div>
+              <p>No compliance breaches logged.</p>
+            </div>
+          ) : (
+            <div className="card">
+              {breaches.map((b, i) => (
+                <div key={b.id} style={{ padding: '0.85rem 1.25rem', borderBottom: i < breaches.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                    <strong>{b.field_name || 'Manual Breach'}</strong>
+                    <span className={`badge ${b.status === 'RESOLVED' ? 'badge-success' : 'badge-danger'}`}>{b.status}</span>
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{b.description}</div>
                 </div>
               ))}
             </div>

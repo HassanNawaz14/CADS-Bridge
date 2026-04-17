@@ -7,6 +7,7 @@ import api from '../services/api';
 // Feature options available for projects
 const OPTIONAL_FEATURES = [
   { key: 'annotations', label: '📝 Annotations', desc: 'Inline document annotations' },
+  { key: 'kpi_command_centre', label: '📈 KPI Command Centre', desc: 'Cross-domain KPI analysis' },
   { key: 'knowledge_hub', label: '📚 Knowledge Hub', desc: 'Shared glossary & past projects' },
   { key: 'reporting', label: '📊 Reporting Engine', desc: 'Joint stakeholder reports' },
   { key: 'conflict_detection', label: '⚠️ Conflict Detection', desc: 'CA-DS discrepancy alerts' },
@@ -59,12 +60,17 @@ const NewProjectModal = ({ onClose }) => {
     milestones: [{ title: '', dueDate: '' }],
 
     // Step 4: Features
-    features: ['messaging', 'file_sharing', 'task_board'], // always include core features
+    features: ALL_FEATURES.map((f) => f.key),
 
     // Metadata
     searchCA: '',
     searchDS: '',
   });
+
+  // Update form
+  const updateForm = (field, value) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  };
 
   // Load available users on mount
   useEffect(() => {
@@ -94,10 +100,55 @@ const NewProjectModal = ({ onClose }) => {
     loadUsers();
   }, [user.id]);
 
-  // Update form
-  const updateForm = (field, value) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
+  // Auto-save to localStorage
+  const autoSaveKey = `project-draft-${user.id}`;
+  
+  const saveDraft = () => {
+    const draft = { ...form, lastSaved: new Date().toISOString() };
+    localStorage.setItem(autoSaveKey, JSON.stringify(draft));
   };
+
+  const loadDraft = () => {
+    const saved = localStorage.getItem(autoSaveKey);
+    if (saved) {
+      try {
+        const draft = JSON.parse(saved);
+        // Only load if saved within last 24 hours
+        const savedTime = new Date(draft.lastSaved);
+        const now = new Date();
+        const hoursDiff = (now - savedTime) / (1000 * 60 * 60);
+        if (hoursDiff < 24) {
+          setForm({ ...draft });
+          return true;
+        }
+      } catch (e) {
+        console.error('Failed to load draft:', e);
+      }
+    }
+    return false;
+  };
+
+  const clearDraft = () => {
+    localStorage.removeItem(autoSaveKey);
+  };
+
+  // Load draft on mount
+  useEffect(() => {
+    const hasDraft = loadDraft();
+    if (hasDraft) {
+      setError('Draft loaded from your previous session. You can continue where you left off.');
+    }
+  }, []);
+
+  // Auto-save on form changes (debounced)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (Object.values(form).some(v => v !== '' && v !== null && v !== undefined)) {
+        saveDraft();
+      }
+    }, 2000); // Save after 2 seconds of inactivity
+    return () => clearTimeout(timer);
+  }, [form]);
 
   // Milestone helpers
   const addMilestone = () => {
@@ -260,6 +311,7 @@ const NewProjectModal = ({ onClose }) => {
         name: form.name.trim(),
         description: form.description.trim(),
         objectives: form.objectives.trim(),
+        domain: form.domain,
         startDate: form.startDate,
         endDate: form.endDate,
         milestones: form.milestones.map((m) => ({ title: m.title.trim(), dueDate: m.dueDate })),
@@ -270,6 +322,7 @@ const NewProjectModal = ({ onClose }) => {
 
       await projectsAPI.create(projectData);
       setSuccess(true);
+      clearDraft(); // Clear the draft on successful submission
     } catch (err) {
       console.error('Project creation error:', err);
       setError(err.response?.data?.message || 'Failed to create project. Please try again.');

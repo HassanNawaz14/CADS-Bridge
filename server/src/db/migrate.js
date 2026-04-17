@@ -75,8 +75,10 @@ const migrations = [
      name           NVARCHAR(200)    NOT NULL,
      description    NVARCHAR(MAX)    NOT NULL,
      objectives     NVARCHAR(MAX)    NOT NULL,
+     domain         NVARCHAR(10)     NOT NULL DEFAULT 'JOINT'
+                                     CHECK (domain IN ('CA','DS','JOINT')),
      status         NVARCHAR(20)     NOT NULL DEFAULT 'pending'
-                                     CHECK (status IN ('pending','active','rejected','completed','archived')),
+                                     CHECK (status IN ('draft','pending','active','rejected','completed','archived')),
      initiated_by   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
      start_date     DATE             NULL,
      end_date       DATE             NULL,
@@ -86,6 +88,21 @@ const migrations = [
      created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
      updated_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='projects' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('projects') AND name = 'domain')
+   BEGIN
+     ALTER TABLE projects ADD domain NVARCHAR(10) NOT NULL DEFAULT 'JOINT';
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='projects' AND xtype='U')
+   AND EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('projects') AND name = 'domain')
+   AND NOT EXISTS (
+     SELECT * FROM sys.check_constraints
+     WHERE parent_object_id = OBJECT_ID('projects')
+       AND name = 'CK_projects_domain'
+   )
+   BEGIN
+     EXEC('ALTER TABLE projects ADD CONSTRAINT CK_projects_domain CHECK (domain IN (''CA'',''DS'',''JOINT''));');
+   END`,
 
   // ── 5. Project Milestones ─────────────────────────────────────────────
   `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_milestones' AND xtype='U')
@@ -151,13 +168,16 @@ const migrations = [
      title        NVARCHAR(200)    NOT NULL,
      description  NVARCHAR(MAX)    NULL,
      priority     NVARCHAR(10)     NOT NULL DEFAULT 'Medium'
-                                   CHECK (priority IN ('High','Medium','Low')),
+                                  CHECK (priority IN ('High','Medium','Low','Critical')),
      status       NVARCHAR(20)     NOT NULL DEFAULT 'todo'
-                                   CHECK (status IN ('todo','in_progress','done')),
+                                  CHECK (status IN ('todo','in_progress','in_review','done')),
+     type         NVARCHAR(30)     NOT NULL DEFAULT 'OTHER',
      assigned_to  UNIQUEIDENTIFIER NULL REFERENCES users(id),
      created_by   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
      due_date     DATE             NULL,
      completed_at DATETIME2        NULL,
+     force_closed_reason NVARCHAR(MAX) NULL,
+     closed_by    UNIQUEIDENTIFIER NULL REFERENCES users(id),
      created_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
      updated_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
@@ -166,10 +186,16 @@ const migrations = [
   `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_records' AND xtype='U')
    CREATE TABLE kpi_records (
      id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id   UNIQUEIDENTIFIER NULL REFERENCES projects(id),
      env_id       UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
      user_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     domain       NVARCHAR(10)     NOT NULL DEFAULT 'CA' CHECK (domain IN ('CA','DS')),
      metric_key   NVARCHAR(100)    NOT NULL,   -- e.g. 'report_accuracy','model_accuracy'
      metric_value DECIMAL(10,4)    NOT NULL,
+     unit         NVARCHAR(20)     NOT NULL DEFAULT '%',
+     target_value DECIMAL(10,4)    NULL,
+     source       NVARCHAR(20)     NOT NULL DEFAULT 'MANUAL' CHECK (source IN ('MANUAL','AUTO_INGESTED')),
+     period_label NVARCHAR(50)     NULL,
      period_start DATE             NOT NULL,
      period_end   DATE             NOT NULL,
      recorded_at  DATETIME2        NOT NULL DEFAULT GETUTCDATE()
@@ -230,7 +256,124 @@ const migrations = [
      changed_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
 
-  // ── 16. Indexes for performance ───────────────────────────────────────
+  // ── 16. Project Approvals (for dual-admin approval workflow) ───────────
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_approvals' AND xtype='U')
+   CREATE TABLE project_approvals (
+     id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id   UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     admin_id     UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     admin_team   NVARCHAR(2)      NOT NULL CHECK (admin_team IN ('CA','DS')),
+     approved_at  DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     notes        NVARCHAR(MAX)    NULL,
+     UNIQUE (project_id, admin_team)
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_dashboard_layouts' AND xtype='U')
+   CREATE TABLE kpi_dashboard_layouts (
+     id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id      UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     user_id     UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     layout_json NVARCHAR(MAX)    NOT NULL,
+     created_at  DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     updated_at  DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (env_id, user_id)
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kpi_insight_notes' AND xtype='U')
+   CREATE TABLE kpi_insight_notes (
+     id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id       UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id   UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     pair_key     NVARCHAR(200)    NOT NULL,
+     period_label NVARCHAR(50)     NULL,
+     note         NVARCHAR(MAX)    NOT NULL,
+     author_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     created_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='task_peer_ratings' AND xtype='U')
+   CREATE TABLE task_peer_ratings (
+     id            UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id        UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     task_id       UNIQUEIDENTIFIER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     rater_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     rated_user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     rating        INT              NOT NULL CHECK (rating BETWEEN 1 AND 5),
+     note          NVARCHAR(1000)   NULL,
+     created_at    DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='task_comments' AND xtype='U')
+   CREATE TABLE task_comments (
+     id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     task_id      UNIQUEIDENTIFIER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     author_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     comment_text NVARCHAR(MAX)    NOT NULL,
+     created_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='task_dependencies' AND xtype='U')
+   CREATE TABLE task_dependencies (
+     id                 UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id             UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id         UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id            UNIQUEIDENTIFIER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     depends_on_task_id UNIQUEIDENTIFIER NOT NULL REFERENCES tasks(id),
+     created_at         DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (task_id, depends_on_task_id)
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='project_file_versions' AND xtype='U')
+   CREATE TABLE project_file_versions (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     file_id        UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+     version_number NVARCHAR(20)     NOT NULL,
+     output_type    NVARCHAR(30)     NULL,
+     change_note    NVARCHAR(MAX)    NULL,
+     file_path      NVARCHAR(500)    NOT NULL,
+     file_size      BIGINT           NOT NULL,
+     mime_type      NVARCHAR(100)    NOT NULL,
+     published_by   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     published_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='regulatory_rules' AND xtype='U')
+   CREATE TABLE regulatory_rules (
+     id                   UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id               UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id           UNIQUEIDENTIFIER NULL REFERENCES projects(id) ON DELETE CASCADE,
+     field_name           NVARCHAR(100)    NOT NULL,
+     operator             NVARCHAR(10)     NOT NULL CHECK (operator IN ('GT','LT','EQ','NEQ')),
+     threshold_value      DECIMAL(18,4)    NOT NULL,
+     severity             NVARCHAR(10)     NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+     description          NVARCHAR(MAX)    NOT NULL,
+     regulatory_reference NVARCHAR(255)    NULL,
+     created_by           UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     created_at           DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='constraint_breach_logs' AND xtype='U')
+   CREATE TABLE constraint_breach_logs (
+     id                    UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id                UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id            UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     file_id               UNIQUEIDENTIFIER NULL REFERENCES project_files(id),
+     version_id            UNIQUEIDENTIFIER NULL REFERENCES project_file_versions(id),
+     field_name            NVARCHAR(100)    NULL,
+     severity              NVARCHAR(10)     NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+     description           NVARCHAR(MAX)    NOT NULL,
+     regulatory_reference  NVARCHAR(255)    NULL,
+     status                NVARCHAR(20)     NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','ACKNOWLEDGED','RESOLVED')),
+     resolution_plan       NVARCHAR(MAX)    NULL,
+     corrective_version_id UNIQUEIDENTIFIER NULL REFERENCES project_file_versions(id),
+     resolved_by           UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     resolved_at           DATETIME2        NULL,
+     created_by            UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     created_at            DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='advancement_recommendations' AND xtype='U')
+   CREATE TABLE advancement_recommendations (
+     id                  UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id              UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     user_id             UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     recommended_by      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     recommendation_text NVARCHAR(MAX)    NOT NULL,
+     evidence_json       NVARCHAR(MAX)    NULL,
+     advancement_type    NVARCHAR(100)    NOT NULL,
+     created_at          DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
   `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_users_env_email')
      CREATE INDEX IX_users_env_email ON users(env_id, email);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_audit_logs_env_created')

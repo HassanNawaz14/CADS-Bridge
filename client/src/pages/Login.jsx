@@ -22,7 +22,8 @@ const Login = () => {
       login(res.data.user, res.data.accessToken);
       navigate(from, { replace: true });
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed. Please try again.');
+      setError(err.response?.data?.message
+        || (err.request ? 'Unable to reach the backend server. Please ensure it is running.' : 'Login failed. Please try again.'));
     } finally {
       setLoading(false);
     }

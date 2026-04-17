@@ -7,6 +7,17 @@ const { auditLog } = require('../utils/auditLog');
 const { notify } = require('../utils/notify');
 const { logProjectChange } = require('../utils/projectHistory');
 
+const ALLOWED_PROJECT_FEATURES = [
+  'messaging',
+  'file_sharing',
+  'task_board',
+  'kpi_command_centre',
+  'annotations',
+  'knowledge_hub',
+  'reporting',
+  'conflict_detection',
+];
+
 const validate = (vs) => async (req, res, next) => {
   await Promise.all(vs.map((v) => v.run(req)));
   const errors = validationResult(req);
@@ -151,102 +162,127 @@ router.post('/',
     body('name').trim().isLength({ min: 3, max: 200 }).withMessage('Project name must be 3–200 characters.'),
     body('description').trim().notEmpty().withMessage('Description is required.'),
     body('objectives').trim().notEmpty().withMessage('Objectives are required.'),
-    body('caMembers').isArray({ min: 1 }).withMessage('At least one CA member required.'),
-    body('dsMembers').isArray({ min: 1 }).withMessage('At least one DS member required.'),
-    body('startDate').isDate().withMessage('Valid start date is required.'),
-    body('endDate').isDate().withMessage('Valid end date is required.'),
+    body('domain').isIn(['finance', 'data', 'hybrid']).withMessage('Invalid domain selected.'),
+    body('caMembers').isArray({ min: 1 }).withMessage('At least one CA member is required.'),
+    body('caMembers.*').isUUID().withMessage('CA member IDs must be valid GUIDs.'),
+    body('dsMembers').isArray({ min: 1 }).withMessage('At least one DS member is required.'),
+    body('dsMembers.*').isUUID().withMessage('DS member IDs must be valid GUIDs.'),
+    body('startDate').isISO8601().withMessage('Valid start date is required.'),
+    body('endDate').isISO8601().withMessage('Valid end date is required.'),
     body('milestones').isArray({ min: 1 }).withMessage('At least one milestone is required.'),
+    body('milestones.*.title').trim().notEmpty().withMessage('Each milestone needs a title.'),
+    body('milestones.*.dueDate').isISO8601().withMessage('Each milestone needs a valid due date.'),
     body('features').isArray({ min: 1 }).withMessage('At least one workspace feature is required.'),
+    body('features.*').isIn(ALLOWED_PROJECT_FEATURES).withMessage('Invalid project feature selected.'),
   ]),
   async (req, res) => {
     try {
-      const { name, description, objectives, caMembers, dsMembers, startDate, endDate, milestones, features } = req.body;
+      const { name, description, objectives, domain: frontendDomain, caMembers, dsMembers, startDate, endDate, milestones, features } = req.body;
 
-      if (new Date(endDate) <= new Date(startDate)) {
+      // Map frontend domain to backend domain
+      const domainMap = { finance: 'CA', data: 'DS', hybrid: 'JOINT' };
+      if (!domainMap[frontendDomain]) {
+        return res.status(400).json({ success: false, message: 'Invalid project domain selected.' });
+      }
+      const domain = domainMap[frontendDomain];
+
+      const projectStart = new Date(startDate);
+      const projectEnd = new Date(endDate);
+      if (projectEnd <= projectStart) {
         return res.status(400).json({ success: false, message: 'End date must be after start date.' });
       }
 
-      // Combine CA and DS members
       const allMembers = [...new Set([...caMembers, ...dsMembers])];
 
-      // Verify members belong to this env and have correct teams
       const memberCheck = await query(
         `SELECT id, team FROM users
-         WHERE id IN (${allMembers.map((_, i) => `@m${i}`).join(',')}) AND env_id = @envId AND status = 'active'`,
+         WHERE id IN (${allMembers.map((_, i) => `@m${i}`).join(',')})
+           AND env_id = @envId
+           AND status = 'active'`,
         {
           ...Object.fromEntries(allMembers.map((m, i) => [`m${i}`, { type: sql.UniqueIdentifier, value: m }])),
           envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
         }
       );
+
       if (memberCheck.recordset.length !== allMembers.length) {
-        return res.status(400).json({ success: false, message: 'One or more selected members are invalid.' });
+        return res.status(400).json({ success: false, message: 'One or more selected members are invalid or inactive.' });
       }
 
-      // Verify CA members are actually CA and DS members are actually DS
-      const caTeams = new Set(memberCheck.recordset.filter(m => caMembers.includes(m.id)).map(m => m.team));
-      const dsTeams = new Set(memberCheck.recordset.filter(m => dsMembers.includes(m.id)).map(m => m.team));
+      const memberTeams = memberCheck.recordset.reduce((map, member) => {
+        map[member.id] = member.team;
+        return map;
+      }, {});
 
-      if (!caTeams.has('CA')) {
-        return res.status(400).json({ success: false, message: 'Selected CA members must be from the CA team.' });
+      for (const memberId of caMembers) {
+        if (memberTeams[memberId] !== 'CA') {
+          return res.status(400).json({ success: false, message: 'All CA members must belong to the CA team.' });
+        }
       }
-      if (!dsTeams.has('DS')) {
-        return res.status(400).json({ success: false, message: 'Selected DS members must be from the DS team.' });
+      for (const memberId of dsMembers) {
+        if (memberTeams[memberId] !== 'DS') {
+          return res.status(400).json({ success: false, message: 'All DS members must belong to the DS team.' });
+        }
       }
 
-      // Create project + members + milestones + features
       const projectId = require('uuid').v4();
 
-      await query(
-        `INSERT INTO projects (id, env_id, name, description, objectives, initiated_by, start_date, end_date, status)
-         VALUES (@id, @envId, @name, @desc, @obj, @by, @start, @end, 'pending')`,
-        {
-          id:    { type: sql.UniqueIdentifier, value: projectId },
-          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
-          name:  { type: sql.NVarChar, value: name },
-          desc:  { type: sql.NVarChar(sql.MAX), value: description },
-          obj:   { type: sql.NVarChar(sql.MAX), value: objectives },
-          by:    { type: sql.UniqueIdentifier, value: req.user.id },
-          start: { type: sql.Date, value: new Date(startDate) },
-          end:   { type: sql.Date, value: new Date(endDate) },
-        }
-      );
+      await transaction(async (trx) => {
+        const request = (params) => {
+          const req = trx.request();
+          Object.entries(params).forEach(([key, { type, value }]) => req.input(key, type, value));
+          return req;
+        };
 
-      // Add members (including initiator if not included)
-      const membersToAdd = new Set([...allMembers, req.user.id]);
-      for (const memberId of membersToAdd) {
-        await query(
-          `INSERT INTO project_members (id, project_id, user_id) VALUES (NEWID(), @pid, @uid)`,
-          {
+        await request({
+          id:     { type: sql.UniqueIdentifier, value: projectId },
+          envId:  { type: sql.UniqueIdentifier, value: req.user.env_id },
+          name:   { type: sql.NVarChar, value: name },
+          desc:   { type: sql.NVarChar(sql.MAX), value: description },
+          obj:    { type: sql.NVarChar(sql.MAX), value: objectives },
+          domain: { type: sql.NVarChar, value: domain },
+          by:     { type: sql.UniqueIdentifier, value: req.user.id },
+          start:  { type: sql.Date, value: projectStart },
+          end:    { type: sql.Date, value: projectEnd },
+        }).query(
+          `INSERT INTO projects (id, env_id, name, description, objectives, domain, initiated_by, start_date, end_date, status)
+           VALUES (@id, @envId, @name, @desc, @obj, @domain, @by, @start, @end, 'pending')`
+        );
+
+        const membersToAdd = new Set([...allMembers, req.user.id]);
+        for (const memberId of membersToAdd) {
+          await request({
             pid: { type: sql.UniqueIdentifier, value: projectId },
             uid: { type: sql.UniqueIdentifier, value: memberId },
-          }
-        );
-      }
+          }).query(
+            `INSERT INTO project_members (id, project_id, user_id) VALUES (NEWID(), @pid, @uid)`
+          );
+        }
 
-      // Add milestones
-      for (const m of milestones) {
-        await query(
-          `INSERT INTO project_milestones (id, project_id, title, due_date) VALUES (NEWID(), @pid, @title, @due)`,
-          {
+        for (const m of milestones) {
+          const dueDate = new Date(m.dueDate);
+          if (dueDate < projectStart || dueDate > projectEnd) {
+            throw new Error('Milestone dates must be within the project timeline.');
+          }
+          await request({
             pid:   { type: sql.UniqueIdentifier, value: projectId },
-            title: { type: sql.NVarChar, value: m.title },
-            due:   { type: sql.Date, value: new Date(m.dueDate) },
-          }
-        );
-      }
+            title: { type: sql.NVarChar, value: m.title.trim() },
+            due:   { type: sql.Date, value: dueDate },
+          }).query(
+            `INSERT INTO project_milestones (id, project_id, title, due_date) VALUES (NEWID(), @pid, @title, @due)`
+          );
+        }
 
-      // Add features
-      for (const feature of features) {
-        await query(
-          `INSERT INTO project_features (id, project_id, feature) VALUES (NEWID(), @pid, @feature)`,
-          {
+        for (const feature of features) {
+          await request({
             pid:     { type: sql.UniqueIdentifier, value: projectId },
             feature: { type: sql.NVarChar, value: feature },
-          }
-        );
-      }
+          }).query(
+            `INSERT INTO project_features (id, project_id, feature) VALUES (NEWID(), @pid, @feature)`
+          );
+        }
+      });
 
-      // Notify admins
       const admins = await query(
         `SELECT id FROM users WHERE env_id = @envId AND role IN ('admin','platform_admin') AND status = 'active'`,
         { envId: { type: sql.UniqueIdentifier, value: req.user.env_id } }
@@ -262,12 +298,11 @@ router.post('/',
         });
       }
 
-      // Log project creation in history
       await logProjectChange({
         projectId,
         changedBy: req.user.id,
         changeType: 'created',
-        changeNote: `Project created with ${caMembers.length} CA + ${dsMembers.length} DS members, ${milestones.length} milestones, features: ${features.join(', ')}`,
+        changeNote: `Project created with domain: ${domain}, ${caMembers.length} CA + ${dsMembers.length} DS members, ${milestones.length} milestones, features: ${features.join(', ')}`,
       });
 
       await auditLog({
@@ -282,8 +317,10 @@ router.post('/',
 
       res.status(201).json({ success: true, message: 'Project proposal submitted for admin approval.', projectId });
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ success: false, message: 'Failed to create project.' });
+      console.error('Project creation failed:', err.stack || err);
+      const isValidationError = err.message === 'Milestone dates must be within the project timeline.';
+      const message = isValidationError ? err.message : 'Failed to create project.';
+      res.status(isValidationError ? 400 : 500).json({ success: false, message });
     }
   }
 );
@@ -292,43 +329,97 @@ router.post('/',
 router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, res) => {
   try {
     const { id } = req.params;
+    const { notes } = req.body;
 
     const projResult = await query(
-      `SELECT id, name, status FROM projects WHERE id = @id AND env_id = @envId`,
+      `SELECT p.id, p.name, p.status, p.domain, u.team as admin_team
+       FROM projects p
+       JOIN users u ON u.id = @adminId
+       WHERE p.id = @id AND p.env_id = @envId`,
       {
-        id:    { type: sql.UniqueIdentifier, value: id },
-        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+        id:      { type: sql.UniqueIdentifier, value: id },
+        adminId: { type: sql.UniqueIdentifier, value: req.user.id },
+        envId:   { type: sql.UniqueIdentifier, value: req.user.env_id },
       }
     );
     if (!projResult.recordset.length) return res.status(404).json({ success: false, message: 'Project not found.' });
-    if (projResult.recordset[0].status !== 'pending') {
+    
+    const project = projResult.recordset[0];
+    if (project.status !== 'pending') {
       return res.status(400).json({ success: false, message: 'Project is not pending approval.' });
     }
 
-    await query(
-      `UPDATE projects SET status = 'active', approved_by = @by, approved_at = GETUTCDATE(), updated_at = GETUTCDATE()
-       WHERE id = @id`,
-      {
-        id: { type: sql.UniqueIdentifier, value: id },
-        by: { type: sql.UniqueIdentifier, value: req.user.id },
-      }
-    );
+    const adminTeam = project.admin_team;
+    const requiresBothAdmins = project.domain === 'JOINT';
 
-    // Notify all project members
-    const members = await query(
-      `SELECT user_id FROM project_members WHERE project_id = @id AND is_active = 1`,
-      { id: { type: sql.UniqueIdentifier, value: id } }
-    );
-    for (const m of members.recordset) {
-      await notify({
-        userId: m.user_id,
-        type: 'project_approved',
-        title: 'Project Approved',
-        body: `Your project "${projResult.recordset[0].name}" has been approved! The shared workspace is now active.`,
-        refId: id,
-        io: req.app.get('io'),
-      });
+    if (!['CA', 'DS'].includes(adminTeam)) {
+      return res.status(403).json({ success: false, message: 'Only CA or DS admins can approve projects.' });
     }
+
+    if (project.domain === 'CA' && adminTeam !== 'CA') {
+      return res.status(403).json({ success: false, message: 'Only CA admins can approve this project.' });
+    }
+    if (project.domain === 'DS' && adminTeam !== 'DS') {
+      return res.status(403).json({ success: false, message: 'Only DS admins can approve this project.' });
+    }
+
+    await transaction(async (trx) => {
+      const request = (params) => {
+        const req = trx.request();
+        Object.entries(params).forEach(([key, { type, value }]) => req.input(key, type, value));
+        return req;
+      };
+
+      // Record this admin's approval
+      await request({
+        pid:   { type: sql.UniqueIdentifier, value: id },
+        aid:   { type: sql.UniqueIdentifier, value: req.user.id },
+        team:  { type: sql.NVarChar, value: adminTeam },
+        notes: { type: sql.NVarChar(sql.MAX), value: notes || null },
+      }).query(
+        `INSERT INTO project_approvals (id, project_id, admin_id, admin_team, notes)
+         VALUES (NEWID(), @pid, @aid, @team, @notes)`
+      );
+
+      // Check if all required approvals are complete
+      let allApproved = false;
+      if (requiresBothAdmins) {
+        // For JOINT projects, need both CA and DS admin approval
+        const approvalCount = await trx.request()
+          .input('pid', sql.UniqueIdentifier, id)
+          .query(`SELECT COUNT(*) as count FROM project_approvals WHERE project_id = @pid`);
+        allApproved = approvalCount.recordset[0].count >= 2;
+      } else {
+        // For CA/DS-only projects, single admin approval is sufficient
+        allApproved = true;
+      }
+
+      if (allApproved) {
+        // Activate the project
+        await request({
+          id: { type: sql.UniqueIdentifier, value: id },
+          by: { type: sql.UniqueIdentifier, value: req.user.id },
+        }).query(
+          `UPDATE projects SET status = 'active', approved_by = @by, approved_at = GETUTCDATE(), updated_at = GETUTCDATE()
+           WHERE id = @id`
+        );
+
+        // Notify all project members
+        const members = await trx.request()
+          .input('id', sql.UniqueIdentifier, id)
+          .query(`SELECT user_id FROM project_members WHERE project_id = @id AND is_active = 1`);
+        for (const m of members.recordset) {
+          await notify({
+            userId: m.user_id,
+            type: 'project_approved',
+            title: 'Project Approved',
+            body: `Your project "${project.name}" has been approved! The shared workspace is now active.`,
+            refId: id,
+            io: req.app.get('io'),
+          });
+        }
+      }
+    });
 
     // Log approval in history
     await logProjectChange({
@@ -337,7 +428,8 @@ router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, 
       changeType: 'approved',
       fieldName: 'status',
       oldValue: 'pending',
-      newValue: 'active',
+      newValue: requiresBothAdmins ? 'pending' : 'active', // Will be 'active' if single approval sufficient
+      changeNote: notes || `Approved by ${adminTeam} admin`,
     });
 
     await auditLog({
@@ -346,13 +438,86 @@ router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, 
       actionType: 'project_approved',
       targetType: 'project',
       targetId: id,
-      targetName: projResult.recordset[0].name,
+      targetName: project.name,
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, message: 'Project approved and workspace activated.' });
+    const message = requiresBothAdmins 
+      ? 'Your approval has been recorded. Waiting for the other admin team to approve.'
+      : 'Project approved and workspace activated.';
+
+    res.json({ success: true, message });
   } catch (err) {
+    console.error('Project approval failed:', err);
+    const duplicateApproval = err.number === 2627 || err.number === 2601 || err.message?.includes('UNIQUE constraint');
+    if (duplicateApproval) {
+      return res.status(400).json({ success: false, message: 'You have already approved this project.' });
+    }
     res.status(500).json({ success: false, message: 'Failed to approve project.' });
+  }
+});
+
+// ── POST /api/projects/:id/request-changes ──────────────────────────────
+router.post('/:id/request-changes', requireRole('admin', 'platform_admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason?.trim()) {
+      return res.status(400).json({ success: false, message: 'Change request reason is required.' });
+    }
+
+    const projResult = await query(
+      `SELECT id, name, initiated_by FROM projects WHERE id = @id AND env_id = @envId AND status = 'pending'`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: id },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      }
+    );
+    if (!projResult.recordset.length) return res.status(404).json({ success: false, message: 'Pending project not found.' });
+
+    await query(
+      `UPDATE projects SET status = 'draft', rejection_note = @reason, updated_at = GETUTCDATE() WHERE id = @id`,
+      {
+        id:     { type: sql.UniqueIdentifier, value: id },
+        reason: { type: sql.NVarChar(sql.MAX), value: reason },
+      }
+    );
+
+    await notify({
+      userId: projResult.recordset[0].initiated_by,
+      type: 'project_changes_requested',
+      title: 'Project Changes Requested',
+      body: `Changes requested for your project "${projResult.recordset[0].name}". Please review and resubmit.`,
+      refId: id,
+      io: req.app.get('io'),
+    });
+
+    // Log change request in history
+    await logProjectChange({
+      projectId: id,
+      changedBy: req.user.id,
+      changeType: 'changes_requested',
+      fieldName: 'status',
+      oldValue: 'pending',
+      newValue: 'draft',
+      changeNote: reason,
+    });
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'project_changes_requested',
+      targetType: 'project',
+      targetId: id,
+      targetName: projResult.recordset[0].name,
+      metadata: { reason },
+      ipAddress: req.ip,
+    });
+
+    res.json({ success: true, message: 'Changes requested. Project returned to draft status.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to request changes.' });
   }
 });
 
@@ -362,8 +527,8 @@ router.post('/:id/reject', requireRole('admin', 'platform_admin'), async (req, r
     const { id } = req.params;
     const { reason } = req.body;
 
-    if (!reason?.trim()) {
-      return res.status(400).json({ success: false, message: 'Rejection reason is required.' });
+    if (!reason?.trim() || reason.trim().length < 20) {
+      return res.status(400).json({ success: false, message: 'Rejection reason must be at least 20 characters.' });
     }
 
     const projResult = await query(

@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
+const isLocalhost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const API_BASE = process.env.REACT_APP_API_URL || (isLocalhost ? 'http://localhost:5000' : '');
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`,
@@ -50,6 +51,9 @@ export const adminAPI = {
   getAuditLogs:       (params)    => api.get('/admin/audit-logs', { params }),
   getKpiThresholds:   ()          => api.get('/admin/kpi-thresholds'),
   updateKpiThreshold: (key, data) => api.put(`/admin/kpi-thresholds/${key}`, data),
+  getRegulatoryRules: (params)    => api.get('/admin/regulatory-rules', { params }),
+  createRegulatoryRule:(data)     => api.post('/admin/regulatory-rules', data),
+  getComplianceBreaches:(params)  => api.get('/admin/compliance-breaches', { params }),
 };
 
 // ── Projects ──────────────────────────────────────────────
@@ -59,6 +63,7 @@ export const projectsAPI = {
   create:  (data)   => api.post('/projects', data),
   approve: (id)     => api.post(`/projects/${id}/approve`),
   reject:  (id, reason) => api.post(`/projects/${id}/reject`, { reason }),
+  requestChanges: (id, reason) => api.post(`/projects/${id}/request-changes`, { reason }),
   history: (id)     => api.get(`/projects/${id}/history`),
 };
 
@@ -71,6 +76,11 @@ export const workspaceAPI = {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
   downloadFile: (pid, fid)   => `/api/projects/${pid}/files/${fid}/download`,
+  getFileVersions: (pid, fid) => api.get(`/projects/${pid}/files/${fid}/versions`),
+  restoreFileVersion: (pid, fid, versionId) => api.post(`/projects/${pid}/files/${fid}/restore`, { versionId }),
+  getBreaches: (pid) => api.get(`/projects/${pid}/breaches`),
+  createBreach: (pid, data) => api.post(`/projects/${pid}/breaches`, data),
+  resolveBreach: (pid, breachId, data) => api.patch(`/projects/${pid}/breaches/${breachId}/resolve`, data),
 };
 
 // ── Tasks ─────────────────────────────────────────────────
@@ -78,12 +88,21 @@ export const tasksAPI = {
   list:         (params) => api.get('/tasks', { params }),
   create:       (data)   => api.post('/tasks', data),
   updateStatus: (id, status) => api.patch(`/tasks/${id}/status`, { status }),
+  addComment:   (id, comment) => api.post(`/tasks/${id}/comments`, { comment }),
+  adminUpdate:  (id, data) => api.patch(`/tasks/${id}/admin`, data),
+  setDependencies: (id, blockedBy) => api.post(`/tasks/${id}/dependencies`, { blockedBy }),
+  getDependencies: (projectId) => api.get(`/tasks/project/${projectId}/dependencies`),
+  getAccountabilityChain: (projectId) => api.get(`/tasks/project/${projectId}/accountability-chain`),
 };
 
 // ── KPI ───────────────────────────────────────────────────
 export const kpiAPI = {
-  get:    () => api.get('/kpi'),
-  record: (data) => api.post('/kpi', data),
+  get:                 (params) => api.get('/kpi', { params }),
+  record:              (data) => api.post('/kpi', data),
+  saveLayout:          (layout) => api.post('/kpi/layout', { layout }),
+  addInsight:          (data) => api.post('/kpi/insights', data),
+  addPeerRating:       (data) => api.post('/kpi/peer-rating', data),
+  addRecommendation:   (data) => api.post('/kpi/recommendations', data),
 };
 
 // ── Notifications ─────────────────────────────────────────

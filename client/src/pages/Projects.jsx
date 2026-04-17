@@ -17,6 +17,8 @@ const ProjectsPage = () => {
   const [projects, setProjects] = useState([]);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [requesting, setRequesting] = useState(null);
+  const [changeReason, setChangeReason] = useState('');
   const [rejecting, setRejecting] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -42,6 +44,18 @@ const ProjectsPage = () => {
     }
   };
 
+  const handleRequestChanges = async () => {
+    if (!changeReason.trim()) return;
+    try {
+      await projectsAPI.requestChanges(requesting, changeReason);
+      setRequesting(null);
+      setChangeReason('');
+      load();
+    } catch (e) {
+      alert(e.response?.data?.message || 'Failed to request changes.');
+    }
+  };
+
   const handleReject = async () => {
     if (!rejectReason.trim()) return;
     try {
@@ -50,7 +64,7 @@ const ProjectsPage = () => {
       setRejectReason('');
       load();
     } catch (e) {
-      alert(e.response?.data?.message || 'Failed to reject.');
+      alert(e.response?.data?.message || 'Failed to reject project.');
     }
   };
 
@@ -111,6 +125,9 @@ const ProjectsPage = () => {
                   )}
                   {p.status === 'pending' && isAdmin && (
                     <>
+                      <button className="btn btn-sm btn-ghost" style={{ flex: 1, justifyContent: 'center', color: 'var(--warning)', borderColor: 'var(--warning)' }} onClick={() => setRequesting(p.id)}>
+                        ⚠️ Request Changes
+                      </button>
                       <button className="btn btn-sm btn-ghost" style={{ flex: 1, justifyContent: 'center', color: 'var(--success)', borderColor: 'var(--success)' }} onClick={() => handleApprove(p.id)}>
                         ✓ Approve
                       </button>
@@ -131,6 +148,26 @@ const ProjectsPage = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Request Changes modal */}
+      {requesting && (
+        <div className="modal-overlay" onClick={() => setRequesting(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title">Request Changes</h2>
+            <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginBottom: '1.25rem' }}>
+              Provide feedback for the project initiator. The project will be returned to draft status.
+            </p>
+            <div className="form-group">
+              <label className="form-label">Change Request Details *</label>
+              <textarea className="form-input" rows={4} value={changeReason} onChange={(e) => setChangeReason(e.target.value)} placeholder="e.g. Please add more detail to the objectives. Consider breaking down the first milestone into smaller tasks." style={{ resize: 'vertical' }} />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setRequesting(null)}>Cancel</button>
+              <button className="btn btn-warning" onClick={handleRequestChanges} disabled={!changeReason.trim()}>Request Changes</button>
+            </div>
+          </div>
         </div>
       )}
 

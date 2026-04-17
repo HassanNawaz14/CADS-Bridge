@@ -6,19 +6,22 @@ import { useAuth } from '../context/AuthContext';
 const COLUMNS = [
   { status: 'todo',        label: '📋 To Do',       color: 'var(--muted)' },
   { status: 'in_progress', label: '🔄 In Progress',  color: 'var(--ca)'   },
+  { status: 'in_review',   label: '🕵️ In Review',   color: 'var(--warning)' },
   { status: 'done',        label: '✅ Done',          color: 'var(--success)' },
 ];
 
 const priorityBadge = (p) => ({
-  High:   'badge-danger',
+  Critical: 'badge-danger',
+  High:    'badge-danger',
   Medium: 'badge-warning',
-  Low:    'badge-muted',
+  Low:     'badge-muted',
 }[p] || 'badge-muted');
 
-const TaskCard = ({ task, onStatusChange, userId }) => {
+const TaskCard = ({ task, onStatusChange, onAddComment }) => {
   const isOverdue = task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date();
-  const nextStatus = { todo: 'in_progress', in_progress: 'done', done: null };
+  const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
   const canAdvance = nextStatus[task.status];
+  const [comment, setComment] = useState('');
 
   return (
     <div style={{
@@ -46,6 +49,9 @@ const TaskCard = ({ task, onStatusChange, userId }) => {
           {task.description}
         </p>
       )}
+      <div style={{ marginBottom: '0.45rem', fontSize: '0.7rem', color: 'var(--muted)' }}>
+        {task.type ? `Type: ${task.type}` : 'Type: OTHER'}
+      </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -69,9 +75,33 @@ const TaskCard = ({ task, onStatusChange, userId }) => {
             style={{ fontSize: '0.72rem', padding: '0.25rem 0.6rem' }}
             onClick={() => onStatusChange(task.id, nextStatus[task.status])}
           >
-            {task.status === 'todo' ? 'Start →' : 'Done ✓'}
+            {task.status === 'todo' ? 'Start →' : task.status === 'in_progress' ? 'Review →' : 'Done ✓'}
           </button>
         )}
+      </div>
+      <div style={{ marginTop: '0.45rem' }}>
+        <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.2rem' }}>
+          💬 {task.comments?.length || 0} comments
+        </div>
+        <div style={{ display: 'flex', gap: '0.4rem' }}>
+          <input
+            className="form-input"
+            style={{ fontSize: '0.72rem', padding: '0.3rem 0.5rem' }}
+            placeholder="Add comment..."
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+          />
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              if (!comment.trim()) return;
+              await onAddComment(task.id, comment.trim());
+              setComment('');
+            }}
+          >
+            Add
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -83,7 +113,7 @@ const Tasks = () => {
   const [envUsers, setEnvUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', priority: 'Medium', dueDate: '', assignedTo: '' });
+  const [form, setForm] = useState({ title: '', description: '', priority: 'Medium', type: 'OTHER', dueDate: '', assignedTo: '', blockedBy: [] });
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState('');
   const [viewMine, setViewMine] = useState(false);
@@ -122,11 +152,13 @@ const Tasks = () => {
         title: form.title,
         description: form.description || undefined,
         priority: form.priority,
+        type: form.type,
         dueDate: form.dueDate || undefined,
         assignedTo: form.assignedTo || undefined,
+        blockedBy: form.blockedBy,
       });
       setShowCreate(false);
-      setForm({ title: '', description: '', priority: 'Medium', dueDate: '', assignedTo: '' });
+      setForm({ title: '', description: '', priority: 'Medium', type: 'OTHER', dueDate: '', assignedTo: '', blockedBy: [] });
       load();
     } catch (e) {
       setCreateError(e.response?.data?.message || 'Failed to create task.');
@@ -135,6 +167,15 @@ const Tasks = () => {
   };
 
   const tasksByStatus = (status) => tasks.filter((t) => t.status === status);
+
+  const handleAddComment = async (taskId, comment) => {
+    try {
+      await tasksAPI.addComment(taskId, comment);
+      load();
+    } catch (e) {
+      alert(e.response?.data?.message || 'Failed to add comment.');
+    }
+  };
 
   return (
     <DashboardLayout title="Task Board" subtitle="Assign and track team tasks">
@@ -152,7 +193,7 @@ const Tasks = () => {
           <span className="spinner spinner-dark" style={{ width: 32, height: 32 }} />
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.25rem', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.25rem', alignItems: 'start' }}>
           {COLUMNS.map((col) => {
             const colTasks = tasksByStatus(col.status);
             return (
@@ -171,7 +212,7 @@ const Tasks = () => {
                       No tasks
                     </div>
                   ) : colTasks.map((t) => (
-                    <TaskCard key={t.id} task={t} onStatusChange={handleStatusChange} userId={user.id} />
+                    <TaskCard key={t.id} task={t} onStatusChange={handleStatusChange} onAddComment={handleAddComment} />
                   ))}
                 </div>
               </div>
@@ -202,9 +243,20 @@ const Tasks = () => {
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Priority</label>
                 <select className="form-input" value={form.priority} onChange={(e) => setForm((p) => ({ ...p, priority: e.target.value }))}>
+                  <option>Critical</option>
                   <option>High</option>
                   <option>Medium</option>
                   <option>Low</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Type</label>
+                <select className="form-input" value={form.type} onChange={(e) => setForm((p) => ({ ...p, type: e.target.value }))}>
+                  <option value="DATA_TASK">Data Task</option>
+                  <option value="FINANCIAL_REVIEW">Financial Review</option>
+                  <option value="MODEL_VALIDATION">Model Validation</option>
+                  <option value="DOCUMENTATION">Documentation</option>
+                  <option value="OTHER">Other</option>
                 </select>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -218,6 +270,20 @@ const Tasks = () => {
                 <option value="">Unassigned</option>
                 {envUsers.map((u) => (
                   <option key={u.id} value={u.id}>{u.full_name} ({u.team})</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginTop: '0.75rem' }}>
+              <label className="form-label">Blocked By</label>
+              <select
+                className="form-input"
+                multiple
+                value={form.blockedBy}
+                onChange={(e) => setForm((p) => ({ ...p, blockedBy: Array.from(e.target.selectedOptions).map((o) => o.value) }))}
+                style={{ minHeight: 90 }}
+              >
+                {tasks.filter((t) => t.status !== 'done').map((t) => (
+                  <option key={t.id} value={t.id}>{t.title}</option>
                 ))}
               </select>
             </div>
