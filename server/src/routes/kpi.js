@@ -4,6 +4,7 @@ const { body, validationResult } = require('express-validator');
 const { query, sql } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../utils/auditLog');
+const { detectKpiConflicts } = require('../utils/conflictDetection');
 
 router.use(authenticate);
 
@@ -269,7 +270,18 @@ router.post('/', validate([
       ipAddress: req.ip,
     });
 
-    res.status(201).json({ success: true, message: 'KPI recorded.' });
+    const createdConflicts = await detectKpiConflicts({
+      envId: req.user.env_id,
+      projectId: projectId || null,
+      io: req.app.get('io'),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'KPI recorded.',
+      conflictsCreated: createdConflicts.length,
+      conflicts: createdConflicts,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to record KPI.' });
   }

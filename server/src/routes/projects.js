@@ -585,6 +585,211 @@ router.post('/:id/reject', requireRole('admin', 'platform_admin'), async (req, r
   }
 });
 
+// ── POST /api/projects/:id/complete ──────────────────────────────────────
+router.post('/:id/complete', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user is a project member
+    const memberCheck = await query(
+      `SELECT pm.id FROM project_members pm
+       JOIN projects p ON p.id = pm.project_id
+       WHERE pm.project_id = @id AND pm.user_id = @uid AND pm.is_active = 1 AND p.env_id = @envId`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: id },
+        uid:   { type: sql.UniqueIdentifier, value: req.user.id },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      }
+    );
+    if (!memberCheck.recordset.length) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this project.' });
+    }
+
+    const projResult = await query(
+      `SELECT id, name, status FROM projects WHERE id = @id AND env_id = @envId`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: id },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      }
+    );
+    if (!projResult.recordset.length) return res.status(404).json({ success: false, message: 'Project not found.' });
+
+    const project = projResult.recordset[0];
+    if (project.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'Only active projects can be completed.' });
+    }
+
+    // Check for unresolved critical annotations
+    const unresolvedCritical = await query(
+      `SELECT COUNT(*) as count FROM document_annotations da
+       JOIN project_files pf ON pf.id = da.document_id
+       WHERE da.project_id = @projectId AND da.status = 'OPEN'
+         AND da.type IN ('FINANCIAL_CONSTRAINT', 'REGULATORY_FLAG')`,
+      { projectId: { type: sql.UniqueIdentifier, value: id } }
+    );
+    if (unresolvedCritical.recordset[0].count > 0) {
+      return res.status(400).json({ success: false, message: 'Cannot complete project with unresolved critical annotations.' });
+    }
+
+    // Gate rule: unresolved compliance breaches block completion
+    const unresolvedBreaches = await query(
+      `SELECT COUNT(*) as count
+       FROM constraint_breach_logs
+       WHERE env_id = @envId AND project_id = @projectId AND status != 'RESOLVED'`,
+      {
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+        projectId: { type: sql.UniqueIdentifier, value: id },
+      }
+    );
+    if (unresolvedBreaches.recordset[0].count > 0) {
+      return res.status(400).json({ success: false, message: 'Cannot complete project with unresolved compliance breaches.' });
+    }
+
+    // Generate decision rationale document
+    const annotations = await query(
+      `SELECT da.id, da.document_id, da.selected_text, da.type, da.body, da.status,
+              da.resolved_at, da.created_at,
+              pf.original_name as document_name,
+              u.full_name as author_name,
+              ru.full_name as resolver_name,
+              ar.reply_text, ar.created_at as reply_created_at, aru.full_name as reply_author_name
+       FROM document_annotations da
+       JOIN project_files pf ON pf.id = da.document_id
+       LEFT JOIN users u ON u.id = da.author_id
+       LEFT JOIN users ru ON ru.id = da.resolved_by
+       LEFT JOIN annotation_replies ar ON ar.annotation_id = da.id
+       LEFT JOIN users aru ON aru.id = ar.author_id
+       WHERE da.project_id = @projectId
+       ORDER BY da.created_at ASC, ar.created_at ASC`,
+      { projectId: { type: sql.UniqueIdentifier, value: id } }
+    );
+
+    // Generate HTML document
+    let html = `<html><head><title>Decision Rationale - ${project.name}</title></head><body>`;
+    html += `<h1>Decision Rationale Document</h1>`;
+    html += `<p>Project: ${project.name}</p>`;
+    html += `<p>Generated: ${new Date().toISOString()}</p>`;
+    html += `<h2>Annotations Summary</h2>`;
+
+    const docs = {};
+    annotations.recordset.forEach(row => {
+      if (!docs[row.document_name]) docs[row.document_name] = [];
+      if (!docs[row.document_name].find(a => a.id === row.id)) {
+        docs[row.document_name].push({
+          id: row.id,
+          selected_text: row.selected_text,
+          type: row.type,
+          body: row.body,
+          status: row.status,
+          resolved_at: row.resolved_at,
+          created_at: row.created_at,
+          author_name: row.author_name,
+          resolver_name: row.resolver_name,
+          replies: [],
+        });
+      }
+      if (row.reply_text) {
+        const ann = docs[row.document_name].find(a => a.id === row.id);
+        ann.replies.push({
+          text: row.reply_text,
+          created_at: row.reply_created_at,
+          author_name: row.reply_author_name,
+        });
+      }
+    });
+
+    Object.keys(docs).forEach(docName => {
+      html += `<h3>${docName}</h3>`;
+      docs[docName].forEach(ann => {
+        html += `<div style="border:1px solid #ccc; margin:10px; padding:10px;">`;
+        html += `<strong>${ann.type}</strong> - ${ann.status}<br>`;
+        html += `Author: ${ann.author_name} | Created: ${ann.created_at}<br>`;
+        if (ann.resolver_name) html += `Resolved by: ${ann.resolver_name} | Resolved: ${ann.resolved_at}<br>`;
+        if (ann.selected_text) html += `<em>"${ann.selected_text}"</em><br>`;
+        html += `${ann.body}<br>`;
+        if (ann.replies.length > 0) {
+          html += `<strong>Replies:</strong><ul>`;
+          ann.replies.forEach(reply => {
+            html += `<li>${reply.author_name}: ${reply.text} (${reply.created_at})</li>`;
+          });
+          html += `</ul>`;
+        }
+        html += `</div>`;
+      });
+    });
+
+    html += `</body></html>`;
+
+    // Save the document
+    const fs = require('fs').promises;
+    const path = require('path');
+    const uploadsDir = path.join(__dirname, '../../uploads');
+    const fileName = `decision_rationale_${id}_${Date.now()}.html`;
+    const filePath = path.join(uploadsDir, fileName);
+    await fs.writeFile(filePath, html);
+
+    // Insert into database
+    await query(
+      `INSERT INTO decision_rationale_documents (id, project_id, document_path, generated_at)
+       VALUES (NEWID(), @projectId, @filePath, GETUTCDATE())`,
+      {
+        projectId: { type: sql.UniqueIdentifier, value: id },
+        filePath: { type: sql.NVarChar, value: fileName },
+      }
+    );
+
+    // Update project status
+    await query(
+      `UPDATE projects SET status = 'completed', updated_at = GETUTCDATE() WHERE id = @id`,
+      { id: { type: sql.UniqueIdentifier, value: id } }
+    );
+
+    // Prompt admins to publish deliverables to Knowledge Hub (Feature 3.6.2)
+    const admins = await query(
+      `SELECT id FROM users
+       WHERE env_id = @envId AND role IN ('admin','platform_admin','super_admin') AND status = 'active'`,
+      { envId: { type: sql.UniqueIdentifier, value: req.user.env_id } }
+    );
+    for (const admin of admins.recordset) {
+      await notify({
+        userId: admin.id,
+        type: 'knowledge_hub_publish_prompt',
+        title: 'Publish to Knowledge Hub?',
+        body: `Project "${project.name}" is completed. Review and publish relevant deliverables to the Knowledge Hub.`,
+        refId: id,
+        io: req.app.get('io'),
+      });
+    }
+
+    // Log completion
+    await logProjectChange({
+      projectId: id,
+      changedBy: req.user.id,
+      changeType: 'completed',
+      fieldName: 'status',
+      oldValue: 'active',
+      newValue: 'completed',
+      changeNote: 'Project completed with decision rationale document generated',
+    });
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'project_completed',
+      targetType: 'project',
+      targetId: id,
+      targetName: project.name,
+      metadata: { rationaleDocument: fileName },
+      ipAddress: req.ip,
+    });
+
+    res.json({ success: true, message: 'Project completed successfully. Decision rationale document generated.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to complete project.' });
+  }
+});
+
 // ── GET /api/projects/:id/history ──────────────────────────────────────
 router.get('/:id/history', async (req, res) => {
   try {

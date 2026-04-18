@@ -86,6 +86,11 @@ const Sidebar = ({ onNewProject }) => {
             <span className="nav-icon">🚀</span>My Projects
           </Link>
         </li>
+        <li>
+          <Link to="/knowledge-hub" className={`nav-item ${isActive('/knowledge-hub') ? 'active' : ''}`}>
+            <span className="nav-icon">📚</span>Knowledge Hub
+          </Link>
+        </li>
       </ul>
 
       {/* Admin section */}

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { projectsAPI, workspaceAPI, tasksAPI } from '../services/api';
+import { projectsAPI, workspaceAPI, tasksAPI, conflictsAPI } from '../services/api';
 import DashboardLayout from '../components/DashboardLayout';
 
 const Workspace = () => {
@@ -12,13 +12,15 @@ const Workspace = () => {
   const [files, setFiles] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [msgInput, setMsgInput] = useState('');
-  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history' | 'breaches'
+  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history' | 'breaches' | 'annotations' | 'conflicts'
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notMember, setNotMember] = useState(false);
   const [history, setHistory] = useState([]);
   const [breaches, setBreaches] = useState([]);
+  const [annotations, setAnnotations] = useState([]);
+  const [conflicts, setConflicts] = useState([]);
   const [fileMeta, setFileMeta] = useState({ outputType: 'OTHER', changeNote: '', publish: false });
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -26,13 +28,14 @@ const Workspace = () => {
   useEffect(() => {
     const load = async () => {
       try {
-        const [pRes, mRes, fRes, tRes, hRes, bRes] = await Promise.all([
+        const [pRes, mRes, fRes, tRes, hRes, bRes, aRes] = await Promise.all([
           projectsAPI.get(id),
           workspaceAPI.getMessages(id),
           workspaceAPI.getFiles(id),
           tasksAPI.list({ projectId: id }),
           projectsAPI.history(id),
           workspaceAPI.getBreaches(id),
+          workspaceAPI.getAnnotations(id),
         ]);
         setProject(pRes.data.project);
         setMessages(mRes.data.messages || []);
@@ -40,6 +43,9 @@ const Workspace = () => {
         setTasks(tRes.data.tasks || []);
         setHistory(hRes.data.history || []);
         setBreaches(bRes.data.breaches || []);
+        setAnnotations(aRes.data.annotations || []);
+        const cRes = await conflictsAPI.list({ projectId: id });
+        setConflicts(cRes.data.conflicts || []);
       } catch (e) {
         if (e.response?.status === 403) setNotMember(true);
       }
@@ -148,9 +154,9 @@ const Workspace = () => {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1rem' }}>
-        {['chat', 'files', 'tasks', 'history', 'breaches'].map((t) => (
+        {['chat', 'files', 'tasks', 'annotations', 'conflicts', 'history', 'breaches'].map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}>
-            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : t === 'history' ? '📜 History' : `⚠️ Breaches (${breaches.filter((b) => b.status !== 'RESOLVED').length})`}
+            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : t === 'annotations' ? '📝 Annotations' : t === 'conflicts' ? `⚔️ Conflicts (${conflicts.filter((c) => c.status !== 'RESOLVED').length})` : t === 'history' ? '📜 History' : `⚠️ Breaches (${breaches.filter((b) => b.status !== 'RESOLVED').length})`}
           </button>
         ))}
       </div>
@@ -250,9 +256,30 @@ const Workspace = () => {
                       </div>
                     </div>
                   </div>
-                  <a href={workspaceAPI.downloadFile(id, f.id)} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
-                    ⬇ Download
-                  </a>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <a href={workspaceAPI.downloadFile(id, f.id)} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
+                      ⬇ Download
+                    </a>
+                    <button className="btn btn-ghost btn-sm" onClick={() => {
+                      // Simple annotation modal for now
+                      const type = prompt('Annotation type (FINANCIAL_CONSTRAINT, REGULATORY_FLAG, CLARIFICATION, APPROVAL):', 'CLARIFICATION');
+                      if (!type) return;
+                      const body = prompt('Annotation body:');
+                      if (!body) return;
+                      const selectedText = prompt('Selected text (optional):');
+                      workspaceAPI.createAnnotation(id, {
+                        documentId: f.id,
+                        type,
+                        body,
+                        selectedText: selectedText || null,
+                        requiresResolution: type === 'FINANCIAL_CONSTRAINT' || type === 'REGULATORY_FLAG',
+                      }).then(() => {
+                        workspaceAPI.getAnnotations(id).then(res => setAnnotations(res.data.annotations || []));
+                      }).catch(e => alert(e.response?.data?.message || 'Failed to create annotation'));
+                    }}>
+                      📝 Annotate
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -338,6 +365,170 @@ const Workspace = () => {
                   {h.change_note && (
                     <div style={{ fontSize: '0.75rem', color: 'var(--muted)', fontStyle: 'italic' }}>
                       {h.change_note}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Annotations */}
+      {tab === 'annotations' && (
+        <div>
+          {annotations.length === 0 ? (
+            <div className="empty-state" style={{ padding: '4rem' }}>
+              <div className="empty-icon">📝</div>
+              <p>No annotations yet. Open a document to start annotating!</p>
+            </div>
+          ) : (
+            <div>
+              {files.filter(f => annotations.some(a => a.document_id === f.id)).map(file => {
+                const fileAnnotations = annotations.filter(a => a.document_id === file.id);
+                return (
+                  <div key={file.id} className="card" style={{ marginBottom: '1rem' }}>
+                    <div style={{ padding: '0.85rem 1.25rem', borderBottom: '1px solid var(--border)', background: 'var(--paper)' }}>
+                      <strong>{file.original_name}</strong>
+                      <span style={{ marginLeft: '1rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
+                        {fileAnnotations.length} annotation{fileAnnotations.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    {fileAnnotations.map((ann, i) => (
+                      <div key={ann.id} style={{ padding: '0.85rem 1.25rem', borderBottom: i < fileAnnotations.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span className={`badge ${ann.type === 'FINANCIAL_CONSTRAINT' ? 'badge-danger' : ann.type === 'REGULATORY_FLAG' ? 'badge-warning' : ann.type === 'CLARIFICATION' ? 'badge-info' : 'badge-success'}`}>
+                              {ann.type.replace('_', ' ')}
+                            </span>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                              {ann.author.name} · {new Date(ann.created_at).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <span className={`badge ${ann.status === 'RESOLVED' ? 'badge-success' : 'badge-muted'}`}>
+                            {ann.status}
+                          </span>
+                        </div>
+                        {ann.selected_text && (
+                          <div style={{ fontStyle: 'italic', background: 'var(--paper)', padding: '0.5rem', borderRadius: '4px', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
+                            "{ann.selected_text}"
+                          </div>
+                        )}
+                        <div style={{ marginBottom: '0.5rem' }}>{ann.body}</div>
+                        {ann.replies && ann.replies.length > 0 && (
+                          <div style={{ marginTop: '0.5rem', paddingLeft: '1rem', borderLeft: '2px solid var(--border)' }}>
+                            {ann.replies.map(reply => (
+                              <div key={reply.id} style={{ fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                                <strong>{reply.author.name}:</strong> {reply.text}
+                                <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: 'var(--muted)' }}>
+                                  {new Date(reply.created_at).toLocaleDateString()}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Conflicts */}
+      {tab === 'conflicts' && (
+        <div>
+          {conflicts.length === 0 ? (
+            <div className="empty-state" style={{ padding: '4rem' }}>
+              <div className="empty-icon">⚔️</div>
+              <p>No conflicts detected yet.</p>
+            </div>
+          ) : (
+            <div className="card">
+              {conflicts.map((c, i) => (
+                <div key={c.id} style={{ padding: '0.85rem 1.25rem', borderBottom: i < conflicts.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                    <strong>{c.field_name}</strong>
+                    <span className={`badge ${c.status === 'RESOLVED' ? 'badge-success' : c.status === 'ESCALATED' ? 'badge-danger' : 'badge-warning'}`}>{c.status}</span>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>
+                    DS {Number(c.ds_value).toFixed(2)} vs CA {Number(c.ca_actual_value).toFixed(2)} · Delta {Number(c.delta_percent).toFixed(2)}%
+                  </div>
+                  <div style={{ marginTop: '0.55rem', display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        const rootCauseCategory = prompt('Root cause category (MODEL_ASSUMPTION_ERROR, DATA_SOURCE_MISMATCH, SCHEMA_CHANGE, CA_DATA_ENTRY_ERROR, EXTERNAL_MARKET_CHANGE, OTHER):', c.root_cause_category || 'OTHER');
+                        if (!rootCauseCategory) return;
+                        const rootCauseNote = prompt('Root cause note (min 50 chars):', c.root_cause_note || '');
+                        if (!rootCauseNote) return;
+                        try {
+                          await conflictsAPI.addRootCause(c.id, { rootCauseCategory, rootCauseNote });
+                          const res = await conflictsAPI.list({ projectId: id });
+                          setConflicts(res.data.conflicts || []);
+                        } catch (e) {
+                          alert(e.response?.data?.message || 'Failed to save root cause.');
+                        }
+                      }}
+                    >
+                      DS Root Cause
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        const responseType = prompt('CA response (CONFIRM, DISPUTE, ESCALATE):', c.ca_response_type || 'CONFIRM');
+                        if (!responseType) return;
+                        const responseNote = prompt('CA response note:', c.ca_response_note || '');
+                        if (!responseNote) return;
+                        try {
+                          await conflictsAPI.addCAResponse(c.id, { responseType, responseNote });
+                          const res = await conflictsAPI.list({ projectId: id });
+                          setConflicts(res.data.conflicts || []);
+                        } catch (e) {
+                          alert(e.response?.data?.message || 'Failed to save CA response.');
+                        }
+                      }}
+                    >
+                      CA Response
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        const reconciliationDecision = prompt('Reconciliation decision: ', c.reconciliation_decision || '');
+                        if (!reconciliationDecision) return;
+                        try {
+                          await conflictsAPI.setReconciliation(c.id, { reconciliationDecision });
+                          const res = await conflictsAPI.list({ projectId: id });
+                          setConflicts(res.data.conflicts || []);
+                        } catch (e) {
+                          alert(e.response?.data?.message || 'Failed to save reconciliation.');
+                        }
+                      }}
+                    >
+                      Reconciliation
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        try {
+                          await conflictsAPI.confirmResolution(c.id);
+                          const res = await conflictsAPI.list({ projectId: id });
+                          setConflicts(res.data.conflicts || []);
+                        } catch (e) {
+                          alert(e.response?.data?.message || 'Failed to confirm resolution.');
+                        }
+                      }}
+                    >
+                      Confirm Resolution
+                    </button>
+                  </div>
+                  {(c.root_cause_note || c.ca_response_note || c.reconciliation_decision) && (
+                    <div style={{ marginTop: '0.55rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
+                      {c.root_cause_note && <div><strong>Root cause:</strong> {c.root_cause_category} — {c.root_cause_note}</div>}
+                      {c.ca_response_note && <div><strong>CA:</strong> {c.ca_response_type} — {c.ca_response_note}</div>}
+                      {c.reconciliation_decision && <div><strong>Decision:</strong> {c.reconciliation_decision}</div>}
                     </div>
                   )}
                 </div>
