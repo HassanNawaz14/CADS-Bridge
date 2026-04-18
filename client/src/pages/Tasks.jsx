@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
-import { tasksAPI, adminAPI } from '../services/api';
+import { tasksAPI, projectsAPI } from '../services/api'; // eslint-disable-line no-unused-vars
 import { useAuth } from '../context/AuthContext';
 
 const COLUMNS = [
@@ -19,8 +19,9 @@ const priorityBadge = (p) => ({
 
 const TaskCard = ({ task, onStatusChange, onAddComment }) => {
   const isOverdue = task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date();
+  const isBlocked = task.blockedBy && task.blockedBy.length > 0;
   const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
-  const canAdvance = nextStatus[task.status];
+  const canAdvance = nextStatus[task.status] && !isBlocked;
   const [comment, setComment] = useState('');
 
   return (
@@ -43,6 +44,12 @@ const TaskCard = ({ task, onStatusChange, onAddComment }) => {
         </div>
         <span className={`badge ${priorityBadge(task.priority)}`} style={{ flexShrink: 0 }}>{task.priority}</span>
       </div>
+
+      {isOverdue && (
+        <div style={{ fontSize: '0.7rem', color: 'var(--danger)', marginBottom: '0.5rem' }}>
+          ⚠️ Overdue - Constraint Breach
+        </div>
+      )}
 
       {task.description && (
         <p style={{ fontSize: '0.76rem', color: 'var(--muted)', marginBottom: '0.5rem', lineHeight: 1.4 }}>
@@ -82,6 +89,11 @@ const TaskCard = ({ task, onStatusChange, onAddComment }) => {
       <div style={{ marginTop: '0.45rem' }}>
         <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.2rem' }}>
           💬 {task.comments?.length || 0} comments
+          {task.blockedBy && task.blockedBy.length > 0 && (
+            <span style={{ marginLeft: '1rem', color: 'var(--danger)' }}>
+              🔒 Blocked by {task.blockedBy.length} task{task.blockedBy.length > 1 ? 's' : ''}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '0.4rem' }}>
           <input
@@ -124,7 +136,7 @@ const Tasks = () => {
       const params = viewMine ? { assignedTo: user.id } : {};
       const [tRes, uRes] = await Promise.all([
         tasksAPI.list(params),
-        adminAPI.getUsers({ status: 'active' }),
+        projectsAPI.getTeamUsers({ status: 'active' }),
       ]);
       setTasks(tRes.data.tasks || []);
       setEnvUsers(uRes.data.users || []);

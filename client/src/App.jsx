@@ -18,6 +18,7 @@ import Tasks from './pages/Tasks';
 import AuditLogs from './pages/AuditLogs';
 import AdminUsers from './pages/AdminUsers';
 import KpiSettings from './pages/KpiSettings';
+import KnowledgeHub from './pages/KnowledgeHub';
 
 import './styles/globals.css';
 import './styles/sidebar.css';
@@ -39,6 +40,7 @@ function App() {
           <Route path="/projects" element={<ProtectedRoute><Projects /></ProtectedRoute>} />
           <Route path="/projects/:id" element={<ProtectedRoute><Workspace /></ProtectedRoute>} />
           <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+          <Route path="/knowledge-hub" element={<ProtectedRoute><KnowledgeHub /></ProtectedRoute>} />
 
           {/* ── Admin only ───────────────────────────────── */}
           <Route path="/audit-logs" element={<ProtectedRoute adminOnly><AuditLogs /></ProtectedRoute>} />

@@ -363,6 +363,161 @@ const migrations = [
      created_by            UNIQUEIDENTIFIER NULL REFERENCES users(id),
      created_at            DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='document_annotations' AND xtype='U')
+   CREATE TABLE document_annotations (
+     id                UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id            UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id        UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     document_id       UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+     document_version  NVARCHAR(20)     NULL,
+     selected_text     NVARCHAR(MAX)    NULL,
+     position_start    INT              NULL,
+     position_end      INT              NULL,
+     author_id         UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     type              NVARCHAR(20)     NOT NULL CHECK (type IN ('FINANCIAL_CONSTRAINT','REGULATORY_FLAG','CLARIFICATION','APPROVAL')),
+     body              NVARCHAR(MAX)    NOT NULL,
+     status            NVARCHAR(20)     NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
+     requires_resolution BIT            NOT NULL DEFAULT 0,
+     resolved_at       DATETIME2        NULL,
+     resolved_by       UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     linked_task_id    UNIQUEIDENTIFIER NULL REFERENCES tasks(id),
+     created_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     updated_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='annotation_replies' AND xtype='U')
+   CREATE TABLE annotation_replies (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     annotation_id  UNIQUEIDENTIFIER NOT NULL REFERENCES document_annotations(id) ON DELETE CASCADE,
+     author_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     reply_text     NVARCHAR(MAX)    NOT NULL,
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='decision_rationale_documents' AND xtype='U')
+   CREATE TABLE decision_rationale_documents (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id     UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     document_path  NVARCHAR(500)    NOT NULL,
+     generated_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     is_confidential BIT             NOT NULL DEFAULT 0
+   );`,
+  // ── 17. Knowledge Hub (Feature 3.6) ───────────────────────────────────
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='glossary_terms' AND xtype='U')
+   CREATE TABLE glossary_terms (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     term NVARCHAR(120) NOT NULL,
+     ca_definition NVARCHAR(MAX) NOT NULL,
+     ds_definition NVARCHAR(MAX) NULL,
+     plain_english_description NVARCHAR(MAX) NOT NULL,
+     example_project_id UNIQUEIDENTIFIER NULL REFERENCES projects(id),
+     status NVARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PUBLISHED')),
+     proposed_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     approved_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+     updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (env_id, term)
+   );`,
+
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guidelines' AND xtype='U')
+   CREATE TABLE guidelines (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     title NVARCHAR(200) NOT NULL,
+     domain NVARCHAR(10) NOT NULL CHECK (domain IN ('CA','DS','JOINT')),
+     project_type NVARCHAR(120) NULL,
+     tags_json NVARCHAR(MAX) NOT NULL DEFAULT '[]',
+     created_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+     updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guideline_versions' AND xtype='U')
+   CREATE TABLE guideline_versions (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     guideline_id UNIQUEIDENTIFIER NOT NULL REFERENCES guidelines(id) ON DELETE CASCADE,
+     version_number INT NOT NULL,
+     content NVARCHAR(MAX) NOT NULL,
+     change_note NVARCHAR(MAX) NULL,
+     created_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (guideline_id, version_number)
+   );`,
+
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guideline_proposed_edits' AND xtype='U')
+   CREATE TABLE guideline_proposed_edits (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     guideline_id UNIQUEIDENTIFIER NOT NULL REFERENCES guidelines(id) ON DELETE CASCADE,
+     proposed_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     proposed_content NVARCHAR(MAX) NOT NULL,
+     comment NVARCHAR(MAX) NULL,
+     status NVARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+     reviewed_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     reviewed_at DATETIME2 NULL,
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='knowledge_hub_library' AND xtype='U')
+   CREATE TABLE knowledge_hub_library (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     file_id UNIQUEIDENTIFIER NULL REFERENCES project_files(id),
+     decision_rationale_id UNIQUEIDENTIFIER NULL REFERENCES decision_rationale_documents(id),
+     domain NVARCHAR(10) NOT NULL CHECK (domain IN ('CA','DS','JOINT')),
+     project_type NVARCHAR(120) NULL,
+     tags_json NVARCHAR(MAX) NOT NULL DEFAULT '[]',
+     key_lessons NVARCHAR(MAX) NOT NULL,
+     published_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     published_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  // ── 18. Conflict detection & resolution (Feature 3.7) ──────────────────
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_rules' AND xtype='U')
+   CREATE TABLE conflict_rules (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id UNIQUEIDENTIFIER NULL REFERENCES projects(id) ON DELETE CASCADE,
+     ds_field NVARCHAR(120) NOT NULL,
+     ca_field NVARCHAR(120) NOT NULL,
+     acceptable_variance_percent DECIMAL(10,4) NOT NULL,
+     severity NVARCHAR(10) NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+     is_regulatory_field BIT NOT NULL DEFAULT 0,
+     created_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_records' AND xtype='U')
+   CREATE TABLE conflict_records (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     conflict_rule_id UNIQUEIDENTIFIER NULL REFERENCES conflict_rules(id),
+     field_name NVARCHAR(120) NOT NULL,
+     ds_value DECIMAL(18,4) NOT NULL,
+     ca_actual_value DECIMAL(18,4) NOT NULL,
+     delta DECIMAL(18,4) NOT NULL,
+     delta_percent DECIMAL(18,4) NOT NULL,
+     severity NVARCHAR(10) NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+     period_label NVARCHAR(50) NULL,
+     status NVARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','IN_RESOLUTION','RESOLVED','ESCALATED')),
+     root_cause_category NVARCHAR(40) NULL CHECK (root_cause_category IN ('MODEL_ASSUMPTION_ERROR','DATA_SOURCE_MISMATCH','SCHEMA_CHANGE','CA_DATA_ENTRY_ERROR','EXTERNAL_MARKET_CHANGE','OTHER')),
+     root_cause_note NVARCHAR(MAX) NULL,
+     ca_response_type NVARCHAR(20) NULL CHECK (ca_response_type IN ('CONFIRM','DISPUTE','ESCALATE')),
+     ca_response_note NVARCHAR(MAX) NULL,
+     reconciliation_decision NVARCHAR(MAX) NULL,
+     ca_confirmed BIT NOT NULL DEFAULT 0,
+     ds_confirmed BIT NOT NULL DEFAULT 0,
+     escalated_at DATETIME2 NULL,
+     resolved_at DATETIME2 NULL,
+     resolved_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+     updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_settings' AND xtype='U')
+   CREATE TABLE conflict_settings (
+     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id UNIQUEIDENTIFIER NOT NULL UNIQUE REFERENCES environments(id),
+     sla_days INT NOT NULL DEFAULT 5 CHECK (sla_days BETWEEN 1 AND 30),
+     updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+   );`,
   `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='advancement_recommendations' AND xtype='U')
    CREATE TABLE advancement_recommendations (
      id                  UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
@@ -387,7 +542,11 @@ const migrations = [
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_kpi_records_user_period')
      CREATE INDEX IX_kpi_records_user_period ON kpi_records(user_id, period_start, period_end);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_project_history_project')
-     CREATE INDEX IX_project_history_project ON project_history(project_id, changed_at DESC);`,
+     CREATE INDEX IX_project_history_project ON project_history(project_id, changed_at DESC);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_document_annotations_document')
+     CREATE INDEX IX_document_annotations_document ON document_annotations(document_id, document_version);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_annotation_replies_annotation')
+     CREATE INDEX IX_annotation_replies_annotation ON annotation_replies(annotation_id, created_at);`,
 ];
 
 async function runMigrations() {

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { projectsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { knowledgeHubAPI } from '../services/api';
 
 // Feature options available for projects
 const OPTIONAL_FEATURES = [
@@ -42,6 +43,17 @@ const NewProjectModal = ({ onClose }) => {
   const [dsUsers, setDsUsers] = useState([]); // DS team members available
   const [loadingUsers, setLoadingUsers] = useState(true);
 
+  // Recommended reading (Knowledge Hub guidelines)
+  const [recommendedGuidelines, setRecommendedGuidelines] = useState([]);
+  const [loadingGuidelines, setLoadingGuidelines] = useState(false);
+  const [readGuidelines, setReadGuidelines] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(`guideline-reads-${user.id}`) || '{}');
+    } catch {
+      return {};
+    }
+  });
+
   // Form state (auto-save between steps)
   const [form, setForm] = useState({
     // Step 1: Details
@@ -72,6 +84,11 @@ const NewProjectModal = ({ onClose }) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const saveReadGuidelines = (next) => {
+    setReadGuidelines(next);
+    localStorage.setItem(`guideline-reads-${user.id}`, JSON.stringify(next));
+  };
+
   // Load available users on mount
   useEffect(() => {
     const loadUsers = async () => {
@@ -99,6 +116,25 @@ const NewProjectModal = ({ onClose }) => {
     };
     loadUsers();
   }, [user.id]);
+
+  // Load recommended guidelines based on selected domain
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setLoadingGuidelines(true);
+        const domainMap = { finance: 'CA', data: 'DS', hybrid: 'JOINT' };
+        const domain = domainMap[form.domain] || 'JOINT';
+        const res = await knowledgeHubAPI.listGuidelines({ domain });
+        setRecommendedGuidelines(res.data.guidelines || []);
+      } catch {
+        setRecommendedGuidelines([]);
+      } finally {
+        setLoadingGuidelines(false);
+      }
+    };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.domain]);
 
   // Auto-save to localStorage
   const autoSaveKey = `project-draft-${user.id}`;
@@ -463,6 +499,55 @@ const NewProjectModal = ({ onClose }) => {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Recommended Reading (3.6 → 3.2 integration) */}
+            <div style={{ marginBottom: '1rem', border: '1.5px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1rem', background: 'white' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.5rem', alignItems: 'center' }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  Recommended reading
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                  Suggested from Knowledge Hub guidelines
+                </div>
+              </div>
+
+              {loadingGuidelines ? (
+                <div style={{ padding: '0.75rem', color: 'var(--muted)', fontSize: '0.85rem' }}>Loading…</div>
+              ) : recommendedGuidelines.length === 0 ? (
+                <div style={{ padding: '0.75rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                  No guidelines found for this domain yet.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: '0.5rem' }}>
+                  {recommendedGuidelines.slice(0, 5).map((g) => {
+                    const isRead = !!readGuidelines[g.id];
+                    return (
+                      <div key={g.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 12 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {g.title}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                            Domain: {g.domain} · Latest v{g.version_number || 1}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className={`btn ${isRead ? 'btn-ghost' : 'btn-primary'}`}
+                          onClick={() => {
+                            const next = { ...readGuidelines, [g.id]: new Date().toISOString() };
+                            saveReadGuidelines(next);
+                          }}
+                          style={{ padding: '0.35rem 0.65rem' }}
+                        >
+                          {isRead ? 'Read ✓' : 'Mark read'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="form-group">

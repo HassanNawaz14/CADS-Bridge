@@ -65,6 +65,8 @@ export const projectsAPI = {
   reject:  (id, reason) => api.post(`/projects/${id}/reject`, { reason }),
   requestChanges: (id, reason) => api.post(`/projects/${id}/request-changes`, { reason }),
   history: (id)     => api.get(`/projects/${id}/history`),
+  complete: (id)    => api.post(`/projects/${id}/complete`),
+  getTeamUsers: (params) => api.get('/projects/team/users', { params }),
 };
 
 // ── Workspace ─────────────────────────────────────────────
@@ -81,6 +83,10 @@ export const workspaceAPI = {
   getBreaches: (pid) => api.get(`/projects/${pid}/breaches`),
   createBreach: (pid, data) => api.post(`/projects/${pid}/breaches`, data),
   resolveBreach: (pid, breachId, data) => api.patch(`/projects/${pid}/breaches/${breachId}/resolve`, data),
+  getAnnotations: (pid, params) => api.get(`/projects/${pid}/annotations`, { params }),
+  createAnnotation: (pid, data) => api.post(`/projects/${pid}/annotations`, data),
+  addAnnotationReply: (pid, annotationId, data) => api.post(`/projects/${pid}/annotations/${annotationId}/replies`, data),
+  resolveAnnotation: (pid, annotationId) => api.patch(`/projects/${pid}/annotations/${annotationId}/resolve`),
 };
 
 // ── Tasks ─────────────────────────────────────────────────
@@ -117,4 +123,35 @@ export const onboardingAPI = {
   checkFirm:     (data)          => api.post('/onboarding/check-firm', data),
   provision:     (data)          => api.post('/onboarding/provision', data),
   inviteMembers: (data)          => api.post('/onboarding/invite-members', data),
+};
+
+// ── Knowledge Hub (3.6) ───────────────────────────────────
+export const knowledgeHubAPI = {
+  glossarySearch: (params) => api.get('/knowledge-hub/glossary', { params }),
+  proposeTerm: (data) => api.post('/knowledge-hub/glossary/propose', data),
+  publishTerm: (id, data) => api.post(`/knowledge-hub/glossary/${id}/publish`, data),
+
+  listGuidelines: (params) => api.get('/knowledge-hub/guidelines', { params }),
+  getGuideline: (id) => api.get(`/knowledge-hub/guidelines/${id}`),
+  createGuideline: (data) => api.post('/knowledge-hub/guidelines', data),
+  proposeGuidelineEdit: (id, data) => api.post(`/knowledge-hub/guidelines/${id}/propose-edit`, data),
+  reviewProposedEdit: (id, editId, data) =>
+    api.post(`/knowledge-hub/guidelines/${id}/proposed-edits/${editId}/review`, data),
+
+  listLibrary: (params) => api.get('/knowledge-hub/library', { params }),
+  publishLibraryEntry: (data) => api.post('/knowledge-hub/library/publish', data),
+  getLibraryPublishOptions: (params) => api.get('/knowledge-hub/library/publish-options', { params }),
+};
+
+// ── Conflicts (3.7) ────────────────────────────────────────
+export const conflictsAPI = {
+  list: (params) => api.get('/conflicts', { params }),
+  addRootCause: (id, data) => api.post(`/conflicts/${id}/root-cause`, data),
+  addCAResponse: (id, data) => api.post(`/conflicts/${id}/ca-response`, data),
+  setReconciliation: (id, data) => api.post(`/conflicts/${id}/reconciliation`, data),
+  confirmResolution: (id) => api.post(`/conflicts/${id}/confirm`),
+  listRules: (params) => api.get('/conflicts/rules/list', { params }),
+  createRule: (data) => api.post('/conflicts/rules', data),
+  getSettings: () => api.get('/conflicts/settings'),
+  updateSettings: (data) => api.put('/conflicts/settings', data),
 };

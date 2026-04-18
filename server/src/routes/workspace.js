@@ -140,6 +140,54 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'changeNote is required (min 10 chars) for publishing.' });
     }
 
+    let violations = [];
+    if (publish) {
+      if (!dataSnapshot) {
+        return res.status(400).json({ success: false, message: 'Publishing requires dataSnapshot for regulatory pre-check.' });
+      }
+      const rules = await query(
+        `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
+         FROM regulatory_rules
+         WHERE env_id = @envId AND (project_id IS NULL OR project_id = @projectId)`,
+        {
+          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+          projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        }
+      );
+      const snapshot = typeof dataSnapshot === 'string' ? JSON.parse(dataSnapshot) : dataSnapshot;
+      for (const rule of rules.recordset) {
+        const val = snapshot?.[rule.field_name];
+        if (val === undefined || val === null || Number.isNaN(Number(val))) continue;
+        if (compareRule(rule.operator, Number(val), Number(rule.threshold_value))) {
+          violations.push({
+            ruleId: rule.id,
+            fieldName: rule.field_name,
+            value: Number(val),
+            threshold: Number(rule.threshold_value),
+            severity: rule.severity,
+            description: rule.description,
+            regulatoryReference: rule.regulatory_reference,
+          });
+        }
+      }
+      await auditLog({
+        envId: req.user.env_id,
+        actorId: req.user.id,
+        actionType: 'regulatory_precheck_run',
+        targetType: 'project',
+        targetId: req.params.projectId,
+        metadata: { passed: violations.length === 0, violations: violations.length },
+        ipAddress: req.ip,
+      });
+      if (violations.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Publication blocked by regulatory pre-check.',
+          precheck: { passed: false, violations },
+        });
+      }
+    }
+
     let documentId = fileId;
     let currentVersion = '1.0';
     if (documentId) {
@@ -195,55 +243,6 @@ router.post('/files', handleUpload('file'), async (req, res) => {
         publishedBy: { type: sql.UniqueIdentifier, value: req.user.id },
       }
     );
-
-    let violations = [];
-    if (publish && dataSnapshot) {
-      const rules = await query(
-        `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
-         FROM regulatory_rules
-         WHERE env_id = @envId AND (project_id IS NULL OR project_id = @projectId)`,
-        {
-          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
-          projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
-        }
-      );
-      const snapshot = typeof dataSnapshot === 'string' ? JSON.parse(dataSnapshot) : dataSnapshot;
-      for (const rule of rules.recordset) {
-        const val = snapshot?.[rule.field_name];
-        if (val === undefined || val === null || Number.isNaN(Number(val))) continue;
-        if (compareRule(rule.operator, Number(val), Number(rule.threshold_value))) {
-          violations.push({
-            ruleId: rule.id,
-            fieldName: rule.field_name,
-            value: Number(val),
-            threshold: Number(rule.threshold_value),
-            severity: rule.severity,
-            description: rule.description,
-            regulatoryReference: rule.regulatory_reference,
-          });
-        }
-      }
-
-      for (const v of violations) {
-        await query(
-          `INSERT INTO constraint_breach_logs
-            (id, env_id, project_id, file_id, version_id, field_name, severity, description, regulatory_reference, created_by)
-           VALUES
-            (NEWID(), @envId, @projectId, @fileId, @versionId, @fieldName, @severity, @description, @reference, @createdBy)`,
-          {
-            envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
-            projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
-            fileId: { type: sql.UniqueIdentifier, value: documentId },
-            versionId: { type: sql.UniqueIdentifier, value: versionInsert.recordset[0].id },
-            fieldName: { type: sql.NVarChar(100), value: v.fieldName },
-            severity: { type: sql.NVarChar(10), value: v.severity },
-            description: { type: sql.NVarChar(sql.MAX), value: `Auto rule breach: ${v.description}. Value=${v.value}, Threshold=${v.threshold}` },
-            reference: { type: sql.NVarChar(255), value: v.regulatoryReference },
-            createdBy: { type: sql.UniqueIdentifier, value: req.user.id },
-          }
-        );
-      }
-    }
 
     const file = {
       id: documentId,
@@ -407,6 +406,353 @@ router.patch('/breaches/:breachId/resolve', async (req, res) => {
     res.json({ success: true, message: 'Breach resolved.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to resolve breach.' });
+  }
+});
+
+// ── GET /api/projects/:projectId/annotations ─────────────────────────────
+router.get('/annotations', async (req, res) => {
+  try {
+    const { documentId, documentVersion } = req.query;
+    let whereClause = 'WHERE da.project_id = @projectId AND da.env_id = @envId';
+    const params = {
+      projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+    };
+
+    if (documentId) {
+      whereClause += ' AND da.document_id = @documentId';
+      params.documentId = { type: sql.UniqueIdentifier, value: documentId };
+    }
+    if (documentVersion) {
+      whereClause += ' AND da.document_version = @documentVersion';
+      params.documentVersion = { type: sql.NVarChar, value: documentVersion };
+    }
+
+    const result = await query(
+      `SELECT da.id, da.document_id, da.document_version, da.selected_text,
+              da.position_start, da.position_end, da.type, da.body, da.status,
+              da.requires_resolution, da.resolved_at, da.created_at,
+              u.full_name as author_name, u.team as author_team, u.avatar_initials,
+              ar.id as reply_id, ar.reply_text, ar.created_at as reply_created_at,
+              ru.full_name as reply_author_name, ru.team as reply_author_team
+       FROM document_annotations da
+       JOIN users u ON u.id = da.author_id
+       LEFT JOIN annotation_replies ar ON ar.annotation_id = da.id
+       LEFT JOIN users ru ON ru.id = ar.author_id
+       ${whereClause}
+       ORDER BY da.created_at ASC, ar.created_at ASC`,
+      params
+    );
+
+    // Group replies under annotations
+    const annotations = {};
+    result.recordset.forEach(row => {
+      if (!annotations[row.id]) {
+        annotations[row.id] = {
+          id: row.id,
+          document_id: row.document_id,
+          document_version: row.document_version,
+          selected_text: row.selected_text,
+          position_start: row.position_start,
+          position_end: row.position_end,
+          type: row.type,
+          body: row.body,
+          status: row.status,
+          requires_resolution: row.requires_resolution,
+          resolved_at: row.resolved_at,
+          created_at: row.created_at,
+          author: {
+            name: row.author_name,
+            team: row.author_team,
+            avatar_initials: row.avatar_initials,
+          },
+          replies: [],
+        };
+      }
+      if (row.reply_id) {
+        annotations[row.id].replies.push({
+          id: row.reply_id,
+          text: row.reply_text,
+          created_at: row.reply_created_at,
+          author: {
+            name: row.reply_author_name,
+            team: row.reply_author_team,
+          },
+        });
+      }
+    });
+
+    res.json({ success: true, annotations: Object.values(annotations) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch annotations.' });
+  }
+});
+
+// ── POST /api/projects/:projectId/annotations ────────────────────────────
+router.post('/annotations', async (req, res) => {
+  try {
+    const { documentId, documentVersion, selectedText, positionStart, positionEnd, type, body, requiresResolution } = req.body;
+
+    if (!documentId || !type || !body) {
+      return res.status(400).json({ success: false, message: 'Missing required fields.' });
+    }
+
+    // Get document info
+    const docResult = await query(
+      `SELECT uploaded_by FROM project_files WHERE id = @docId AND project_id = @projectId`,
+      {
+        docId: { type: sql.UniqueIdentifier, value: documentId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      }
+    );
+    if (!docResult.recordset.length) {
+      return res.status(404).json({ success: false, message: 'Document not found.' });
+    }
+
+    const documentOwnerId = docResult.recordset[0].uploaded_by;
+
+    // Create annotation
+    const result = await query(
+      `INSERT INTO document_annotations
+         (id, env_id, project_id, document_id, document_version, selected_text,
+          position_start, position_end, author_id, type, body, requires_resolution)
+       OUTPUT INSERTED.*
+       VALUES
+         (NEWID(), @envId, @projectId, @documentId, @documentVersion, @selectedText,
+          @positionStart, @positionEnd, @authorId, @type, @body, @requiresResolution)`,
+      {
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        documentId: { type: sql.UniqueIdentifier, value: documentId },
+        documentVersion: { type: sql.NVarChar, value: documentVersion || null },
+        selectedText: { type: sql.NVarChar(sql.MAX), value: selectedText || null },
+        positionStart: { type: sql.Int, value: positionStart || null },
+        positionEnd: { type: sql.Int, value: positionEnd || null },
+        authorId: { type: sql.UniqueIdentifier, value: req.user.id },
+        type: { type: sql.NVarChar, value: type },
+        body: { type: sql.NVarChar(sql.MAX), value: body },
+        requiresResolution: { type: sql.Bit, value: requiresResolution || false },
+      }
+    );
+
+    const annotation = result.recordset[0];
+
+    // If requires resolution, create a linked task
+    let linkedTaskId = null;
+    if (requiresResolution) {
+      const taskResult = await query(
+        `INSERT INTO tasks
+           (id, project_id, env_id, title, description, assigned_to, created_by, type)
+         OUTPUT INSERTED.id
+         VALUES
+           (NEWID(), @projectId, @envId, @title, @description, @assignedTo, @createdBy, 'OTHER')`,
+        {
+          projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+          title: { type: sql.NVarChar, value: `Resolve annotation: ${body.substring(0, 50)}...` },
+          description: { type: sql.NVarChar(sql.MAX), value: `Annotation requires resolution: ${body}` },
+          assignedTo: { type: sql.UniqueIdentifier, value: documentOwnerId },
+          createdBy: { type: sql.UniqueIdentifier, value: req.user.id },
+        }
+      );
+      linkedTaskId = taskResult.recordset[0].id;
+
+      // Update annotation with linked task
+      await query(
+        `UPDATE document_annotations SET linked_task_id = @taskId WHERE id = @annotationId`,
+        {
+          taskId: { type: sql.UniqueIdentifier, value: linkedTaskId },
+          annotationId: { type: sql.UniqueIdentifier, value: annotation.id },
+        }
+      );
+    }
+
+    // Notify document owner
+    if (documentOwnerId !== req.user.id) {
+      await query(
+        `INSERT INTO notifications (id, user_id, type, title, body, ref_id)
+         VALUES (NEWID(), @userId, 'annotation_created', 'New annotation on your document',
+                 'A new ${type.toLowerCase()} annotation was added to your document.', @refId)`,
+        {
+          userId: { type: sql.UniqueIdentifier, value: documentOwnerId },
+          refId: { type: sql.NVarChar, value: annotation.id },
+        }
+      );
+    }
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'annotation_created',
+      targetType: 'annotation',
+      targetId: annotation.id,
+      metadata: {
+        annotationId: annotation.id,
+        documentId,
+        type,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json({ success: true, annotation: { ...annotation, linked_task_id: linkedTaskId } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to create annotation.' });
+  }
+});
+
+// ── POST /api/projects/:projectId/annotations/:annotationId/replies ──────
+router.post('/annotations/:annotationId/replies', async (req, res) => {
+  try {
+    const { replyText } = req.body;
+
+    if (!replyText?.trim()) {
+      return res.status(400).json({ success: false, message: 'Reply text is required.' });
+    }
+
+    // Verify annotation exists and user has access
+    const annResult = await query(
+      `SELECT da.id, pf.uploaded_by FROM document_annotations da
+       JOIN project_files pf ON pf.id = da.document_id
+       WHERE da.id = @annotationId AND da.project_id = @projectId`,
+      {
+        annotationId: { type: sql.UniqueIdentifier, value: req.params.annotationId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      }
+    );
+    if (!annResult.recordset.length) {
+      return res.status(404).json({ success: false, message: 'Annotation not found.' });
+    }
+
+    const documentOwnerId = annResult.recordset[0].uploaded_by;
+
+    // Create reply
+    const result = await query(
+      `INSERT INTO annotation_replies (id, annotation_id, author_id, reply_text)
+       OUTPUT INSERTED.*
+       VALUES (NEWID(), @annotationId, @authorId, @replyText)`,
+      {
+        annotationId: { type: sql.UniqueIdentifier, value: req.params.annotationId },
+        authorId: { type: sql.UniqueIdentifier, value: req.user.id },
+        replyText: { type: sql.NVarChar(sql.MAX), value: replyText.trim() },
+      }
+    );
+
+    const reply = result.recordset[0];
+
+    // Notify annotation author and document owner if different
+    const notifyUsers = new Set();
+    const annAuthorResult = await query(
+      `SELECT author_id FROM document_annotations WHERE id = @annotationId`,
+      { annotationId: { type: sql.UniqueIdentifier, value: req.params.annotationId } }
+    );
+    if (annAuthorResult.recordset[0].author_id !== req.user.id) {
+      notifyUsers.add(annAuthorResult.recordset[0].author_id);
+    }
+    if (documentOwnerId !== req.user.id && documentOwnerId !== annAuthorResult.recordset[0].author_id) {
+      notifyUsers.add(documentOwnerId);
+    }
+
+    for (const userId of notifyUsers) {
+      await query(
+        `INSERT INTO notifications (id, user_id, type, title, body, ref_id)
+         VALUES (NEWID(), @userId, 'annotation_reply', 'New reply to annotation',
+                 'Someone replied to an annotation on a document.', @refId)`,
+        {
+          userId: { type: sql.UniqueIdentifier, value: userId },
+          refId: { type: sql.NVarChar, value: req.params.annotationId },
+        }
+      );
+    }
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'annotation_reply',
+      targetType: 'annotation',
+      targetId: req.params.annotationId,
+      metadata: {
+        annotationId: req.params.annotationId,
+        replyId: reply.id,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json({ success: true, reply });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to add reply.' });
+  }
+});
+
+// ── PATCH /api/projects/:projectId/annotations/:annotationId/resolve ─────
+router.patch('/annotations/:annotationId/resolve', async (req, res) => {
+  try {
+    // Verify annotation exists and user can resolve it
+    const annResult = await query(
+      `SELECT da.id, da.status, da.linked_task_id, da.author_id, pf.uploaded_by
+       FROM document_annotations da
+       JOIN project_files pf ON pf.id = da.document_id
+       WHERE da.id = @annotationId AND da.project_id = @projectId`,
+      {
+        annotationId: { type: sql.UniqueIdentifier, value: req.params.annotationId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      }
+    );
+    if (!annResult.recordset.length) {
+      return res.status(404).json({ success: false, message: 'Annotation not found.' });
+    }
+
+    const annotation = annResult.recordset[0];
+    if (annotation.status === 'RESOLVED') {
+      return res.status(400).json({ success: false, message: 'Annotation already resolved.' });
+    }
+
+    // Only annotation author or document owner can resolve
+    if (req.user.id !== annotation.author_id && req.user.id !== annotation.uploaded_by) {
+      return res.status(403).json({ success: false, message: 'You cannot resolve this annotation.' });
+    }
+
+    // Update annotation
+    await query(
+      `UPDATE document_annotations
+       SET status = 'RESOLVED', resolved_at = GETUTCDATE(), resolved_by = @resolvedBy
+       WHERE id = @annotationId`,
+      {
+        annotationId: { type: sql.UniqueIdentifier, value: req.params.annotationId },
+        resolvedBy: { type: sql.UniqueIdentifier, value: req.user.id },
+      }
+    );
+
+    // Close linked task if exists
+    if (annotation.linked_task_id) {
+      await query(
+        `UPDATE tasks SET status = 'done', completed_at = GETUTCDATE(), closed_by = @closedBy
+         WHERE id = @taskId`,
+        {
+          taskId: { type: sql.UniqueIdentifier, value: annotation.linked_task_id },
+          closedBy: { type: sql.UniqueIdentifier, value: req.user.id },
+        }
+      );
+    }
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'annotation_resolved',
+      targetType: 'annotation',
+      targetId: req.params.annotationId,
+      metadata: {
+        annotationId: req.params.annotationId,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.json({ success: true, message: 'Annotation resolved.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to resolve annotation.' });
   }
 });
 
