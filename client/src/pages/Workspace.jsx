@@ -234,7 +234,7 @@ const Workspace = () => {
         </div>
 
         {/* ═══ CENTRE: Tab content area ═══ */}
-        <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--shadow-md)' }}>
+        <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', display:'flex', flexDirection:'column', overflow:'visible', boxShadow:'var(--shadow-md)' }}>
           {/* Tab Bar - Enhanced with horizontal scroll and premium feel */}
           <div style={{ 
             display:'flex', borderBottom:'1px solid var(--border)', background:'var(--paper)', 

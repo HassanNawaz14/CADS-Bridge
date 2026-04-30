@@ -29,8 +29,8 @@
   display: none;
 }
 
-.sidebar-collapsed .sidebar {
-  width: var(--sidebar-collapsed-w);
+.page-layout.sidebar-collapsed .sidebar {
+  width: var(--sidebar-collapsed-w) !important;
 }
 
 /* ── Redesigned Compact Overrides ────────────────────────── */
@@ -66,27 +66,30 @@
 }
 
 .sidebar-collapsed .logo-accent {
-  font-size: 1.6rem;
+  font-size: 1.4rem;
   color: var(--ca);
-  background: linear-gradient(135deg, #3b82f6, #06b6d4);
+  background: linear-gradient(135deg, var(--ca), #3b82f6);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   margin-bottom: 2px;
+  line-height: 1;
 }
 
 .sidebar-collapsed .logo-ds {
-  font-size: 1.6rem;
-  color: var(--ds);
+  font-size: 1.4rem;
+  color: var(--ds) !important;
   margin-bottom: 4px;
+  line-height: 1;
 }
 
 .sidebar-collapsed .logo-bridge {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.2);
-  max-width: 50px;
-  word-wrap: break-word;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.25);
+  max-width: 60px;
+  text-align: center;
+  line-height: 1.2;
 }
 
 .sidebar-collapsed .sb-logo-inner {
@@ -406,7 +409,7 @@
   box-shadow: 0 8px 20px rgba(0,0,0,0.6);
 }
 
-.sidebar-collapsed .sb-toggle {
+.page-layout.sidebar-collapsed .sb-toggle {
   right: -15px;
 }
 
