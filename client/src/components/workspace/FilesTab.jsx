@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { workspaceAPI } from '../../services/api';
-import io from 'socket.io-client';
 
 const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket, onRefresh }) => {
   const [uploading, setUploading] = useState(false);
