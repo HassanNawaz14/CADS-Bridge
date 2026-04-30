@@ -123,7 +123,7 @@ const ProjectsPage = () => {
                       Open Workspace →
                     </Link>
                   )}
-                  {p.status === 'pending' && isAdmin && (
+                  {p.status === 'pending' && isAdmin && !p.approved_by_me && (
                     <>
                       <button className="btn btn-sm btn-ghost" style={{ flex: 1, justifyContent: 'center', color: 'var(--warning)', borderColor: 'var(--warning)' }} onClick={() => setRequesting(p.id)}>
                         ⚠️ Request Changes
@@ -135,6 +135,9 @@ const ProjectsPage = () => {
                         ✗ Reject
                       </button>
                     </>
+                  )}
+                  {p.status === 'pending' && isAdmin && p.approved_by_me && (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--success)' }}>✓ Approved by you (Awaiting partner admin)</span>
                   )}
                   {p.status === 'pending' && !isAdmin && (
                     <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>⏳ Awaiting admin approval</span>

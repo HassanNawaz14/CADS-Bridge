@@ -20,6 +20,8 @@ const tasksRoutes        = require('./routes/tasks');
 const kpiRoutes          = require('./routes/kpi');
 const notifRoutes        = require('./routes/notifications');
 const onboardingRoutes   = require('./routes/onboarding');
+const knowledgeHubRoutes = require('./routes/knowledgeHub');
+const conflictRoutes     = require('./routes/conflicts');
 
 const app = express();
 
@@ -39,6 +41,7 @@ if (!IS_VERCEL) {
   const http = require('http');
   const { Server } = require('socket.io');
   const jwt = require('jsonwebtoken');
+  const WorkspaceSocket = require('./websocket/workspaceSocket');
 
   server = http.createServer(app);
 
@@ -50,6 +53,9 @@ if (!IS_VERCEL) {
     },
   });
 
+  // Initialize workspace socket functionality
+  const workspaceSocket = new WorkspaceSocket(io);
+
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication required'));
@@ -57,6 +63,8 @@ if (!IS_VERCEL) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       socket.userId = decoded.userId;
       socket.envId  = decoded.envId;
+      socket.userRole = decoded.role;
+      socket.userTeam = decoded.team;
       next();
     } catch {
       next(new Error('Invalid token'));
@@ -67,6 +75,7 @@ if (!IS_VERCEL) {
     logger.debug(`Socket connected: user ${socket.userId}`);
     socket.join(`user:${socket.userId}`);
 
+    // Legacy project events (for backward compatibility)
     socket.on('join_project', (projectId) => {
       socket.join(`project:${projectId}`);
       logger.debug(`User ${socket.userId} joined project:${projectId}`);
@@ -125,11 +134,14 @@ app.use('/api/auth',          authLimiter, authRoutes);
 app.use('/api/onboarding',   onboardingRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/projects',      projectRoutes);
+app.use('/api/projects/:projectId', workspaceRoutes);
 app.use('/api/projects/:projectId/messages', workspaceRoutes);
 app.use('/api/projects/:projectId/files',    workspaceRoutes);
 app.use('/api/tasks',         tasksRoutes);
 app.use('/api/kpi',           kpiRoutes);
 app.use('/api/notifications', notifRoutes);
+app.use('/api/knowledge-hub', knowledgeHubRoutes);
+app.use('/api/conflicts',      conflictRoutes);
 
 // Static file serving for uploads (protected via auth middleware in download route)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -395,6 +407,302 @@ if (!IS_VERCEL && server) {
                  created_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
                  created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
                );`);
+
+    // Ensure Decision Rationale table exists (used by project completion + Knowledge Hub)
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='decision_rationale_documents' AND xtype='U')
+               CREATE TABLE decision_rationale_documents (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 document_path NVARCHAR(500) NOT NULL,
+                 generated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 is_confidential BIT NOT NULL DEFAULT 0
+               );`);
+
+    // ── Knowledge Hub (3.6) tables ──────────────────────────────────────
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='glossary_terms' AND xtype='U')
+               CREATE TABLE glossary_terms (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 term NVARCHAR(120) NOT NULL,
+                 ca_definition NVARCHAR(MAX) NOT NULL,
+                 ds_definition NVARCHAR(MAX) NULL,
+                 plain_english_description NVARCHAR(MAX) NOT NULL,
+                 example_project_id UNIQUEIDENTIFIER NULL REFERENCES projects(id),
+                 status NVARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PUBLISHED')),
+                 proposed_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 approved_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 UNIQUE (env_id, term)
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guidelines' AND xtype='U')
+               CREATE TABLE guidelines (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 title NVARCHAR(200) NOT NULL,
+                 domain NVARCHAR(10) NOT NULL CHECK (domain IN ('CA','DS','JOINT')),
+                 project_type NVARCHAR(120) NULL,
+                 tags_json NVARCHAR(MAX) NOT NULL DEFAULT '[]',
+                 created_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guideline_versions' AND xtype='U')
+               CREATE TABLE guideline_versions (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 guideline_id UNIQUEIDENTIFIER NOT NULL REFERENCES guidelines(id) ON DELETE CASCADE,
+                 version_number INT NOT NULL,
+                 content NVARCHAR(MAX) NOT NULL,
+                 change_note NVARCHAR(MAX) NULL,
+                 created_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 UNIQUE (guideline_id, version_number)
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='guideline_proposed_edits' AND xtype='U')
+               CREATE TABLE guideline_proposed_edits (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 guideline_id UNIQUEIDENTIFIER NOT NULL REFERENCES guidelines(id) ON DELETE CASCADE,
+                 proposed_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 proposed_content NVARCHAR(MAX) NOT NULL,
+                 comment NVARCHAR(MAX) NULL,
+                 status NVARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+                 reviewed_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 reviewed_at DATETIME2 NULL,
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='knowledge_hub_library' AND xtype='U')
+               CREATE TABLE knowledge_hub_library (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 file_id UNIQUEIDENTIFIER NULL REFERENCES project_files(id),
+                 decision_rationale_id UNIQUEIDENTIFIER NULL REFERENCES decision_rationale_documents(id),
+                 domain NVARCHAR(10) NOT NULL CHECK (domain IN ('CA','DS','JOINT')),
+                 project_type NVARCHAR(120) NULL,
+                 tags_json NVARCHAR(MAX) NOT NULL DEFAULT '[]',
+                 key_lessons NVARCHAR(MAX) NOT NULL,
+                 published_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 published_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    // ── Conflict Detection & Resolution (3.7) tables ───────────────────
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_rules' AND xtype='U')
+               CREATE TABLE conflict_rules (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 project_id UNIQUEIDENTIFIER NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 ds_field NVARCHAR(120) NOT NULL,
+                 ca_field NVARCHAR(120) NOT NULL,
+                 acceptable_variance_percent DECIMAL(10,4) NOT NULL,
+                 severity NVARCHAR(10) NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+                 is_regulatory_field BIT NOT NULL DEFAULT 0,
+                 created_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_records' AND xtype='U')
+               CREATE TABLE conflict_records (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 conflict_rule_id UNIQUEIDENTIFIER NULL REFERENCES conflict_rules(id),
+                 field_name NVARCHAR(120) NOT NULL,
+                 ds_value DECIMAL(18,4) NOT NULL,
+                 ca_actual_value DECIMAL(18,4) NOT NULL,
+                 delta DECIMAL(18,4) NOT NULL,
+                 delta_percent DECIMAL(18,4) NOT NULL,
+                 severity NVARCHAR(10) NOT NULL CHECK (severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+                 period_label NVARCHAR(50) NULL,
+                 status NVARCHAR(20) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','IN_RESOLUTION','RESOLVED','ESCALATED')),
+                 root_cause_category NVARCHAR(40) NULL CHECK (root_cause_category IN ('MODEL_ASSUMPTION_ERROR','DATA_SOURCE_MISMATCH','SCHEMA_CHANGE','CA_DATA_ENTRY_ERROR','EXTERNAL_MARKET_CHANGE','OTHER')),
+                 root_cause_note NVARCHAR(MAX) NULL,
+                 ca_response_type NVARCHAR(20) NULL CHECK (ca_response_type IN ('CONFIRM','DISPUTE','ESCALATE')),
+                 ca_response_note NVARCHAR(MAX) NULL,
+                 reconciliation_decision NVARCHAR(MAX) NULL,
+                 ca_confirmed BIT NOT NULL DEFAULT 0,
+                 ds_confirmed BIT NOT NULL DEFAULT 0,
+                 escalated_at DATETIME2 NULL,
+                 resolved_at DATETIME2 NULL,
+                 resolved_by UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='conflict_settings' AND xtype='U')
+               CREATE TABLE conflict_settings (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id UNIQUEIDENTIFIER NOT NULL UNIQUE REFERENCES environments(id),
+                 sla_days INT NOT NULL DEFAULT 5 CHECK (sla_days BETWEEN 1 AND 30),
+                 updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    // ── Feature 3.8: Missing project_files columns ──────────────────────
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'domain')
+               BEGIN
+                 ALTER TABLE project_files ADD domain NVARCHAR(10) NOT NULL DEFAULT 'JOINT';
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'file_type')
+               BEGIN
+                 ALTER TABLE project_files ADD file_type NVARCHAR(30) NOT NULL DEFAULT 'OTHER';
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'content')
+               BEGIN
+                 ALTER TABLE project_files ADD content NVARCHAR(MAX) NULL;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'is_locked')
+               BEGIN
+                 ALTER TABLE project_files ADD is_locked BIT NOT NULL DEFAULT 0;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'locked_by')
+               BEGIN
+                 ALTER TABLE project_files ADD locked_by UNIQUEIDENTIFIER NULL;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'lock_expires_at')
+               BEGIN
+                 ALTER TABLE project_files ADD lock_expires_at DATETIME2 NULL;
+               END`);
+
+    // ── Feature 3.8: File collaboration editors table ───────────────────
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='file_collaboration_editors' AND xtype='U')
+               CREATE TABLE file_collaboration_editors (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 file_id UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+                 user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 cursor_position INT NULL,
+                 cursor_color NVARCHAR(20) NULL,
+                 last_seen_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 UNIQUE (file_id, user_id)
+               );`);
+
+    // ── Feature 3.8: Workspace sessions table ───────────────────────────
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_sessions' AND xtype='U')
+               CREATE TABLE workspace_sessions (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 started_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                 ended_at DATETIME2 NULL,
+                 is_active BIT NOT NULL DEFAULT 1
+               );`);
+
+    // ── Feature 3.8: project_messages columns ───────────────────────────
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'parent_message_id')
+               BEGIN
+                 ALTER TABLE project_messages ADD parent_message_id UNIQUEIDENTIFIER NULL REFERENCES project_messages(id);
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'message_type')
+               BEGIN
+                 ALTER TABLE project_messages ADD message_type NVARCHAR(20) NOT NULL DEFAULT 'TEXT' CHECK (message_type IN ('TEXT','FILE_ATTACHMENT','TASK_REFERENCE','ANNOTATION_REFERENCE'));
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'attachment_data')
+               BEGIN
+                 ALTER TABLE project_messages ADD attachment_data NVARCHAR(MAX) NULL;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'is_archived')
+               BEGIN
+                 ALTER TABLE project_messages ADD is_archived BIT NOT NULL DEFAULT 0;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'linked_task_id')
+               BEGIN
+                 ALTER TABLE project_messages ADD linked_task_id UNIQUEIDENTIFIER NULL REFERENCES tasks(id);
+               END`);
+
+
+    // ── Feature 3.8: Document Annotations tables ──────────────────────────
+    const checkDocs = await query(`SELECT COUNT(*) as count FROM sysobjects WHERE name='document_annotations' AND xtype='U'`);
+    if (checkDocs.recordset[0].count === 0) {
+      await query(`CREATE TABLE document_annotations (
+                 id                UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id            UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 project_id        UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 document_id       UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+                 document_version  NVARCHAR(20)     NULL,
+                 selected_text     NVARCHAR(MAX)    NULL,
+                 position_start    INT              NULL,
+                 position_end      INT              NULL,
+                 author_id         UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 type              NVARCHAR(20)     NOT NULL CHECK (type IN ('FINANCIAL_CONSTRAINT','REGULATORY_FLAG','CLARIFICATION','APPROVAL')),
+                 body              NVARCHAR(MAX)    NOT NULL,
+                 status            NVARCHAR(20)     NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
+                 requires_resolution BIT            NOT NULL DEFAULT 0,
+                 resolved_at       DATETIME2        NULL,
+                 resolved_by       UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 linked_task_id    UNIQUEIDENTIFIER NULL REFERENCES tasks(id),
+                 created_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+                 updated_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+               );`);
+    }
+
+    const checkReplies = await query(`SELECT COUNT(*) as count FROM sysobjects WHERE name='annotation_replies' AND xtype='U'`);
+    if (checkReplies.recordset[0].count === 0) {
+      await query(`CREATE TABLE annotation_replies (
+                 id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 annotation_id  UNIQUEIDENTIFIER NOT NULL REFERENCES document_annotations(id) ON DELETE CASCADE,
+                 author_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 reply_text     NVARCHAR(MAX)    NOT NULL,
+                 created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+               );`);
+    }
+
+
+    // ── Feature 3.8: Workspace activity feed table ──────────────────────
+    await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_activity_feed' AND xtype='U')
+               CREATE TABLE workspace_activity_feed (
+                 id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 project_id UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 activity_type NVARCHAR(50) NOT NULL,
+                 actor_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 target_type NVARCHAR(50) NULL,
+                 target_id UNIQUEIDENTIFIER NULL,
+                 target_name NVARCHAR(255) NULL,
+                 description NVARCHAR(MAX) NULL,
+                 metadata NVARCHAR(MAX) NULL,
+                 is_visible BIT NOT NULL DEFAULT 1,
+                 created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+               );`);
+
+    // ── Feature 3.8: project_members workspace_role column ──────────────
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'workspace_role')
+               BEGIN
+                 ALTER TABLE project_members ADD workspace_role NVARCHAR(30) NOT NULL DEFAULT 'member';
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'last_message_read')
+               BEGIN
+                 ALTER TABLE project_members ADD last_message_read DATETIME2 NULL;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'added_at')
+               BEGIN
+                 ALTER TABLE project_members ADD added_at DATETIME2 NOT NULL DEFAULT GETUTCDATE();
+               END`);
   };
 
   const startServer = async () => {

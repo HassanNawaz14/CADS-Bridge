@@ -1,8 +1,8 @@
-/* ── Sidebar ─────────────────────────────────────────────── */
+/* ── Sidebar: The Command Hub Redesign ─────────────────────── */
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
-  background: var(--ink);
+  background: #0d0f17; /* Deeper, more premium navy-black */
   color: var(--paper);
   display: flex;
   flex-direction: column;
@@ -10,162 +10,411 @@
   top: 0;
   left: 0;
   bottom: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
   z-index: 100;
+  transition: width 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); /* Bouncy, high-end feel */
+  overflow: visible;
+  border-right: 1px solid rgba(255, 255, 255, 0.03);
 }
 
+.sb-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: none; /* Hide scrollbar for a cleaner look */
+}
+
+.sb-content::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar {
+  width: var(--sidebar-collapsed-w);
+}
+
+/* ── Redesigned Compact Overrides ────────────────────────── */
+.sidebar-collapsed .logo-main,
+.sidebar-collapsed .sb-user-info,
+.sidebar-collapsed .sb-user .badge,
+.sidebar-collapsed .sb-new-project span:not(.nav-icon),
+.sidebar-collapsed .sb-cat,
+.sidebar-collapsed .sb-nav .nav-item span:not(.nav-icon),
+.sidebar-collapsed .sb-footer-btn span {
+  opacity: 0;
+  max-width: 0;
+  pointer-events: none;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* 1. Logo: Iconic 'C' Mark */
+.sidebar-collapsed .sb-logo {
+  padding: 2rem 0;
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-collapsed .logo-accent,
+.sidebar-collapsed .logo-ds,
+.sidebar-collapsed .logo-bridge {
+  display: block;
+  font-family: 'Syne', sans-serif;
+  font-weight: 900;
+  text-align: center;
+  line-height: 1;
+}
+
+.sidebar-collapsed .logo-accent {
+  font-size: 1.6rem;
+  color: var(--ca);
+  background: linear-gradient(135deg, #3b82f6, #06b6d4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 2px;
+}
+
+.sidebar-collapsed .logo-ds {
+  font-size: 1.6rem;
+  color: var(--ds);
+  margin-bottom: 4px;
+}
+
+.sidebar-collapsed .logo-bridge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.2);
+  max-width: 50px;
+  word-wrap: break-word;
+}
+
+.sidebar-collapsed .sb-logo-inner {
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 2. User: Status Anchor */
+.sidebar-collapsed .sb-user {
+  padding: 1rem 0;
+  justify-content: center;
+  border-bottom: none;
+}
+
+.sidebar-collapsed .avatar {
+  width: 48px;
+  height: 48px;
+  border: 2px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* 3. New Project: Floating Action */
+.sidebar-collapsed .sb-new-project {
+  margin: 1.5rem auto;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border-radius: 16px;
+  background: var(--ca);
+  color: white;
+  box-shadow: 0 8px 20px rgba(26, 107, 255, 0.3);
+  border: none;
+}
+
+.sidebar-collapsed .sb-new-project .nav-icon {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.sidebar-collapsed .sb-new-project:hover {
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: 0 12px 24px rgba(26, 107, 255, 0.4);
+}
+
+/* 4. Navigation: Interactive Tiles */
+.sidebar-collapsed .sb-nav {
+  padding: 0 1rem;
+  gap: 0.75rem;
+}
+
+.sidebar-collapsed .sb-nav .nav-item {
+  width: 56px;
+  height: 56px;
+  justify-content: center;
+  padding: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: all 0.3s;
+  position: relative;
+}
+
+.sidebar-collapsed .sb-nav .nav-item .nav-icon {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.sidebar-collapsed .sb-nav .nav-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateX(2px);
+}
+
+.sidebar-collapsed .sb-nav .nav-item.active {
+  background: rgba(26, 107, 255, 0.15);
+  color: #60a5fa;
+  box-shadow: inset 0 0 0 1.5px rgba(26, 107, 255, 0.3);
+}
+
+.sidebar-collapsed .sb-nav .nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 15%;
+  height: 70%;
+  width: 4px;
+  background: var(--ca);
+  border-radius: 0 4px 4px 0;
+  box-shadow: 0 0 10px var(--ca);
+}
+
+/* 5. Logical Blocks (Categories) - Removed 'ovals' */
+.sidebar-collapsed .sb-cat {
+  display: none;
+}
+
+/* 6. Footer: Vertical Control Stack */
+.sidebar-collapsed .sb-footer {
+  flex-direction: column;
+  padding: 1.5rem 0;
+  gap: 1rem;
+  border-top: none;
+}
+
+.sidebar-collapsed .sb-footer-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-collapsed .sb-footer-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  transform: scale(1.1);
+}
+
+/* ── Base Elements (Full Width) ───────────────────────────── */
 .sb-logo {
-  padding: 1.4rem 1.5rem;
+  padding: 1.75rem 1.5rem;
   font-family: 'Syne', sans-serif;
   font-weight: 800;
-  font-size: 1.15rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  letter-spacing: -0.02em;
+  font-size: 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   flex-shrink: 0;
+}
+
+.sb-logo-inner {
+  display: flex;
+  align-items: center;
+}
+
+.logo-accent {
+  color: var(--ca);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.logo-ds {
+  color: var(--ds);
+  margin-left: 2px;
+  transition: all 0.3s;
+}
+
+.logo-bridge {
+  color: var(--paper);
+  opacity: 0.6;
+  transition: all 0.3s;
 }
 
 .sb-user {
-  padding: 1rem 1.5rem;
+  padding: 1.25rem 1.5rem;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   flex-shrink: 0;
+  transition: all 0.3s;
+}
+
+.sb-user-info {
+  flex: 1;
+  overflow: hidden;
+  transition: all 0.3s;
 }
 
 .sb-name {
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  color: var(--paper);
-  line-height: 1.2;
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
 }
 
 .sb-role {
-  font-size: 0.7rem;
-  color: rgba(245, 243, 238, 0.4);
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.4);
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  margin-top: 0.1rem;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
 }
 
 .role-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  flex-shrink: 0;
 }
 
 .sb-new-project {
-  margin: 0.85rem 0.75rem 0.35rem;
+  margin: 1.5rem 1rem 0.75rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  padding: 0.65rem;
-  border-radius: 10px;
-  background: rgba(26, 107, 255, 0.15);
-  border: 1.5px solid rgba(26, 107, 255, 0.25);
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border-radius: 12px;
+  background: rgba(26, 107, 255, 0.1);
+  border: 1px solid rgba(26, 107, 255, 0.2);
   color: #6ea8fe;
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   font-weight: 700;
-  cursor: pointer;
-  transition: background 0.2s;
-  font-family: 'DM Sans', sans-serif;
-  flex-shrink: 0;
+  transition: all 0.25s;
 }
 
 .sb-new-project:hover {
-  background: rgba(26, 107, 255, 0.25);
+  background: var(--ca);
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(26, 107, 255, 0.2);
 }
 
 .sb-cat {
-  padding: 0.9rem 1.5rem 0.3rem;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  padding: 1.5rem 1.5rem 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(245, 243, 238, 0.2);
-  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.2);
+  transition: all 0.3s;
 }
 
 .sb-nav {
   list-style: none;
-  padding: 0 0.6rem;
+  padding: 0 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
-  flex-shrink: 0;
+  gap: 0.4rem;
 }
 
-.sb-nav a.nav-item,
 .sb-nav .nav-item {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0.6rem 0.85rem;
-  border-radius: 8px;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 12px;
   text-decoration: none;
-  color: rgba(245, 243, 238, 0.48);
-  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.92rem;
   font-weight: 500;
-  transition: background 0.12s, color 0.12s;
-  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.sb-nav a.nav-item:hover,
 .sb-nav .nav-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(245, 243, 238, 0.8);
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
 }
 
-.sb-nav a.nav-item.active,
 .sb-nav .nav-item.active {
-  background: rgba(26, 107, 255, 0.18);
-  color: var(--paper);
+  background: rgba(26, 107, 255, 0.12);
+  color: var(--ca);
+  font-weight: 700;
 }
 
-.sb-nav a.nav-item .nav-icon,
-.sb-nav .nav-item .nav-icon {
-  font-size: 0.95rem;
-  width: 18px;
+.sb-nav .nav-icon {
+  font-size: 1.25rem;
+  width: 24px;
   text-align: center;
   flex-shrink: 0;
 }
 
 .sb-footer {
   margin-top: auto;
-  padding: 1rem 0.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 1.5rem 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
   display: flex;
-  gap: 0.5rem;
+  gap: 0.75rem;
   align-items: center;
-  flex-shrink: 0;
 }
 
 .sb-footer-btn {
   flex: 1;
-  padding: 0.5rem 0.5rem;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(245, 243, 238, 0.4);
-  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.8rem;
   font-weight: 600;
-  cursor: pointer;
-  text-align: center;
-  text-decoration: none;
-  transition: background 0.15s;
-  font-family: 'DM Sans', sans-serif;
-  white-space: nowrap;
+  transition: all 0.25s;
 }
 
 .sb-footer-btn:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: rgba(245, 243, 238, 0.65);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+/* ── Toggle Controller ───────────────────────────────────── */
+.sb-toggle {
+  position: absolute;
+  right: -15px;
+  top: 40px;
+  width: 30px;
+  height: 30px;
+  background: var(--ca);
+  border: 4px solid #0d0f17;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 10px;
+  cursor: pointer;
+  z-index: 110;
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+}
+
+.sb-toggle:hover {
+  transform: scale(1.2) rotate(-5deg);
+  background: #3b82f6;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+}
+
+.sidebar-collapsed .sb-toggle {
+  right: -15px;
+}
+
+.sb-toggle span {
+  transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  display: block;
+}
+
+.sidebar-collapsed .sb-toggle span {
+  transform: rotate(180deg);
 }

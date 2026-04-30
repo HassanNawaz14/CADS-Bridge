@@ -1,374 +1,367 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { useParams, Navigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { projectsAPI, workspaceAPI, tasksAPI } from '../services/api';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useParams } from 'react-router-dom';
 import DashboardLayout from '../components/DashboardLayout';
+import { useAuth } from '../context/AuthContext';
+import { workspaceAPI, tasksAPI, kpiAPI, projectsAPI } from '../services/api';
+import FilesTab from '../components/workspace/FilesTab';
+import ChatTab from '../components/workspace/ChatTab';
+import ConflictsTab from '../components/workspace/ConflictsTab';
+import AuditTab from '../components/workspace/AuditTab';
+import AnnotationsTab from '../components/workspace/AnnotationsTab';
+import TasksTab from '../components/workspace/TasksTab';
+import HubTab from '../components/workspace/HubTab';
+import io from 'socket.io-client';
 
 const Workspace = () => {
   const { id } = useParams();
-  const { user, getSocket } = useAuth();
-  const [project, setProject] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const { user } = useAuth();
+  const [project, setProject] = useState({});
+  const [members, setMembers] = useState([]);
   const [files, setFiles] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [msgInput, setMsgInput] = useState('');
-  const [tab, setTab] = useState('chat'); // 'chat' | 'files' | 'tasks' | 'history' | 'breaches'
+  const [messages, setMessages] = useState([]);
+  const [activityFeed, setActivityFeed] = useState([]);
+  const [projectHealth, setProjectHealth] = useState({});
+  const [onlineUsers, setOnlineUsers] = useState(new Set());
+  const [tab, setTab] = useState('hub');
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [notMember, setNotMember] = useState(false);
-  const [history, setHistory] = useState([]);
-  const [breaches, setBreaches] = useState([]);
-  const [fileMeta, setFileMeta] = useState({ outputType: 'OTHER', changeNote: '', publish: false });
-  const chatEndRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const [socket, setSocket] = useState(null);
+  const [notifs, setNotifs] = useState([]);
+  const [tasks, setTasks] = useState([]);
 
-  useEffect(() => {
-    const load = async () => {
+  const addNotif = (type, message) => {
+    const n = { id: Date.now(), type, message, ts: new Date() };
+    setNotifs(prev => [n, ...prev.slice(0, 4)]);
+    setTimeout(() => setNotifs(prev => prev.filter(x => x.id !== n.id)), 4000);
+  };
+
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [membersRes, filesRes, msgsRes, actRes, healthRes] = await Promise.all([
+        workspaceAPI.getMembers(id),
+        workspaceAPI.getFiles(id),
+        workspaceAPI.getMessages(id),
+        workspaceAPI.getActivityFeed(id),
+        workspaceAPI.getHealth(id)
+      ]);
       try {
-        const [pRes, mRes, fRes, tRes, hRes, bRes] = await Promise.all([
-          projectsAPI.get(id),
-          workspaceAPI.getMessages(id),
-          workspaceAPI.getFiles(id),
-          tasksAPI.list({ projectId: id }),
-          projectsAPI.history(id),
-          workspaceAPI.getBreaches(id),
-        ]);
-        setProject(pRes.data.project);
-        setMessages(mRes.data.messages || []);
-        setFiles(fRes.data.files || []);
-        setTasks(tRes.data.tasks || []);
-        setHistory(hRes.data.history || []);
-        setBreaches(bRes.data.breaches || []);
-      } catch (e) {
-        if (e.response?.status === 403) setNotMember(true);
-      }
+        const pRes = await projectsAPI.get(id);
+        setProject(pRes.data?.project || pRes.data || {});
+      } catch { setProject({}); }
+      try {
+        const tRes = await tasksAPI.list({ projectId: id });
+        setTasks(tRes.data?.tasks || []);
+      } catch { setTasks([]); }
+      setMembers(membersRes.data?.members || []);
+      setFiles(filesRes.data?.files || []);
+      setMessages(msgsRes.data?.messages || []);
+      setActivityFeed(actRes.data?.activities || []);
+      setProjectHealth(healthRes.data?.health || {});
+    } catch (e) {
+      console.error('Load failed:', e);
+    } finally {
       setLoading(false);
-    };
-    load();
+    }
   }, [id]);
 
-  // Join socket room
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // WebSocket
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-    socket.emit('join_project', id);
-    socket.on('new_message', (msg) => setMessages((p) => [...p, msg]));
-    socket.on('new_file', (file) => setFiles((p) => [file, ...p]));
-    return () => {
-      socket.emit('leave_project', id);
-      socket.off('new_message');
-      socket.off('new_file');
-    };
-  }, [id, getSocket]);
+    const s = io(process.env.REACT_APP_WS_URL || 'http://localhost:5000', {
+      auth: { token: localStorage.getItem('accessToken') }
+    });
+    setSocket(s);
+    return () => s.close();
+  }, []);
 
-  // Auto-scroll chat
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const sendMessage = async (e) => {
-    e.preventDefault();
-    if (!msgInput.trim() || sending) return;
-    setSending(true);
-    try {
-      await workspaceAPI.sendMessage(id, msgInput);
-      setMsgInput('');
-    } catch {}
-    setSending(false);
-  };
-
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('outputType', fileMeta.outputType);
-      form.append('changeNote', fileMeta.changeNote);
-      form.append('publish', fileMeta.publish ? 'true' : 'false');
-      await workspaceAPI.uploadFile(id, form);
-      if (fileMeta.publish) {
-        const bRes = await workspaceAPI.getBreaches(id);
-        setBreaches(bRes.data.breaches || []);
+    if (!socket || !id) return;
+    socket.emit('join_workspace', { projectId: id });
+    socket.on('user_joined', d => setOnlineUsers(p => new Set([...p, d.userId])));
+    socket.on('user_left', d => setOnlineUsers(p => { const s = new Set(p); s.delete(d.userId); return s; }));
+    socket.on('new_message', m => setMessages(p => [...p, m]));
+    socket.on('workspace_activity', a => setActivityFeed(p => [a, ...p]));
+    socket.on('new_file', f => setFiles(p => [f, ...p]));
+    socket.on('conflicts_detected', d => addNotif('warning', `${d.count} new conflicts detected!`));
+    socket.on('task_status_updated', d => {
+      loadData(); // Refresh health & task list
+      addNotif('info', `Task status updated`);
+    });
+    socket.on('project_status_updated', d => {
+      if (d.projectId === id) {
+        setProject(p => ({ ...p, status: d.status }));
+        loadData();
+        addNotif('success', `Project is now ${d.status}!`);
       }
-    } catch (e) {
-      alert(e.response?.data?.message || 'Upload failed.');
-    }
-    setUploading(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+    });
+    socket.on('active_users', users => {
+      if (Array.isArray(users)) setOnlineUsers(new Set(users.map(u => u.id)));
+    });
+    return () => {
+      socket.emit('leave_workspace', { projectId: id });
+      ['user_joined','user_left','new_message','workspace_activity','new_file','conflicts_detected','active_users', 'task_status_updated', 'project_status_updated'].forEach(e => socket.off(e));
+    };
+  }, [socket, id, loadData]);
 
-  const handleStatusChange = async (taskId, newStatus) => {
-    try {
-      await tasksAPI.updateStatus(taskId, newStatus);
-      setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: newStatus } : t));
-    } catch (e) {
-      alert(e.response?.data?.message || 'Failed to update task.');
-    }
-  };
+  if (loading) {
+    return (
+      <DashboardLayout title="Loading Workspace...">
+        <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:'60vh' }}>
+          <div className="loading-spinner" />
+        </div>
+      </DashboardLayout>
+    );
+  }
 
-  const formatFileSize = (bytes) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
+  const tabs = [
+    { id:'hub', label:'Hub', icon:'🏠' },
+    { id:'tasks', label:'Tasks', icon:'📋', badge: tasks.filter(t => t.status !== 'done').length },
+    { id:'files', label:'Files & Co-editing', icon:'📁' },
+    { id:'annotations', label:'Annotations', icon:'📝', badge: projectHealth.open_annotations || 0 },
+    { id:'chat', label:'Chat', icon:'💬', badge: messages.length },
+    { id:'conflicts', label:'Conflicts', icon:'⚔️' },
+    { id:'audit', label:'Audit History', icon:'📜' },
+  ];
 
-  if (notMember) return <Navigate to="/projects" replace />;
+  // Milestone progress
+  const milestonesDone = projectHealth.completed_milestones || 0;
+  const milestonesTotal = projectHealth.total_milestones || 0;
+  const milestonePercent = milestonesTotal > 0 ? Math.round((milestonesDone / milestonesTotal) * 100) : 0;
 
-  if (loading) return (
-    <DashboardLayout title="Loading workspace...">
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem' }}>
-        <span className="spinner spinner-dark" style={{ width: 32, height: 32 }} />
-      </div>
-    </DashboardLayout>
-  );
-
-  if (!project) return (
-    <DashboardLayout title="Workspace">
-      <div className="alert alert-error">Project not found.</div>
-    </DashboardLayout>
-  );
-
-  const members = project.members || [];
+  // Task Kanban grouping
+  const tasksByStatus = { todo: [], in_progress: [], in_review: [], done: [] };
+  tasks.forEach(t => { if (tasksByStatus[t.status]) tasksByStatus[t.status].push(t); });
 
   return (
-    <DashboardLayout title={project.name} subtitle="Shared Collaborative Workspace">
-      {/* Team bar */}
-      <div style={{ background: 'white', borderRadius: 'var(--radius-lg)', border: '1.5px solid var(--border)', padding: '0.75rem 1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Team</span>
-        {members.map((m) => (
-          <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.25rem 0.7rem', background: 'var(--paper)', borderRadius: '1rem', fontSize: '0.8rem' }}>
-            <div className={`avatar avatar-sm avatar-${m.team.toLowerCase()}`}>{m.avatar_initials || m.team[0]}</div>
-            <span>{m.full_name} <span style={{ color: 'var(--muted)' }}>({m.team})</span></span>
+    <DashboardLayout title={project.name || 'Workspace'}>
+      {/* Notifications */}
+      <div style={{ position:'fixed', top:80, right:20, zIndex:1000, maxWidth:300 }}>
+        {notifs.map(n => (
+          <div key={n.id} style={{ marginBottom:'0.5rem', padding:'0.6rem 1rem', borderRadius:'var(--radius-md)', background: n.type==='error'?'#fee2e2':n.type==='warning'?'#fef3c7':'#dcfce7', border:`1px solid ${n.type==='error'?'#fca5a5':n.type==='warning'?'#fcd34d':'#86efac'}`, fontSize:'0.8rem', fontWeight:500, animation:'fadeIn 0.3s', boxShadow:'var(--shadow-lg)' }}>
+            {n.message}
           </div>
         ))}
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1rem' }}>
-        {['chat', 'files', 'tasks', 'history', 'breaches'].map((t) => (
-          <button key={t} onClick={() => setTab(t)} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}>
-            {t === 'chat' ? '💬 Chat' : t === 'files' ? `📁 Files (${files.length})` : t === 'tasks' ? `✅ Tasks (${tasks.length})` : t === 'history' ? '📜 History' : `⚠️ Breaches (${breaches.filter((b) => b.status !== 'RESOLVED').length})`}
-          </button>
-        ))}
-      </div>
-
-      {/* Chat */}
-      {tab === 'chat' && (
-        <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 320px)', minHeight: 400 }}>
-          <div style={{ flex: 1, overflowY: 'auto', background: 'white', borderRadius: 'var(--radius-lg)', border: '1.5px solid var(--border)', padding: '1rem', marginBottom: '0.75rem' }}>
-            {messages.length === 0 ? (
-              <div className="empty-state"><div className="empty-icon">💬</div><p>No messages yet. Start the conversation!</p></div>
-            ) : messages.map((m) => {
-              const isMe = m.sender_id === user.id;
-              return (
-                <div key={m.id} style={{ marginBottom: '0.85rem', display: 'flex', flexDirection: isMe ? 'row-reverse' : 'row', gap: '0.6rem', alignItems: 'flex-start' }}>
-                  <div className={`avatar avatar-sm avatar-${m.team?.toLowerCase() || 'ca'}`}>{m.avatar_initials || m.team?.[0] || '?'}</div>
-                  <div style={{ maxWidth: '70%' }}>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.2rem', textAlign: isMe ? 'right' : 'left' }}>
-                      {m.full_name} · {new Date(m.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                    <div style={{
-                      padding: '0.6rem 0.9rem',
-                      borderRadius: isMe ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                      background: isMe ? 'var(--ca)' : 'var(--paper)',
-                      color: isMe ? 'white' : 'var(--ink)',
-                      fontSize: '0.88rem',
-                      lineHeight: 1.5,
-                    }}>{m.content}</div>
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={chatEndRef} />
+      {/* ═══ TOP BAR: Project name, milestone progress, days remaining, conflict count, annotation count ═══ */}
+      <div style={{ 
+        background:'rgba(255, 255, 255, 0.8)', backdropFilter:'blur(10px)', 
+        borderRadius:'var(--radius-lg)', border:'1.5px solid rgba(255, 255, 255, 0.3)', 
+        padding:'1rem 1.5rem', marginBottom:'1rem', display:'flex', justifyContent:'space-between', 
+        alignItems:'center', flexWrap:'wrap', gap:'1rem', boxShadow:'var(--shadow-md)' 
+      }}>
+        <div style={{ flex:'1 1 auto' }}>
+          <h2 style={{ fontFamily:'Syne', fontWeight:700, margin:0, fontSize:'1.4rem', color:'var(--ink)' }}>{project.name || 'Project Workspace'}</h2>
+          <div style={{ fontSize:'0.8rem', color:'var(--muted)', marginTop:'0.3rem', display:'flex', alignItems:'center', gap:'0.75rem', flexWrap:'wrap' }}>
+            <span className={`badge badge-${String(project.status || projectHealth.project_status).toLowerCase()==='active'?'success':'warning'}`} style={{ textTransform:'uppercase', fontSize:'0.65rem' }}>
+              {project.status || projectHealth.project_status || 'PENDING'}
+            </span>
+            {projectHealth.days_remaining !== undefined && (
+              <span style={{ fontWeight:500 }}>{projectHealth.days_remaining > 0 ? `${projectHealth.days_remaining} days remaining` : '⚠️ Overdue'}</span>
+            )}
           </div>
-          <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.6rem' }}>
-            <input
-              className="form-input"
-              placeholder="Type a message..."
-              value={msgInput}
-              onChange={(e) => setMsgInput(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <button type="submit" className="btn btn-ca" disabled={sending || !msgInput.trim()}>
-              {sending ? <span className="spinner" /> : 'Send'}
-            </button>
-          </form>
         </div>
-      )}
 
-      {/* Files */}
-      {tab === 'files' && (
-        <div>
-          <div className="card" style={{ marginBottom: '0.9rem', padding: '0.9rem 1rem' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: '0.6rem', alignItems: 'end' }}>
-              <div>
-                <label className="form-label">Output Type</label>
-                <select className="form-input" value={fileMeta.outputType} onChange={(e) => setFileMeta((p) => ({ ...p, outputType: e.target.value }))}>
-                  <option>MODEL_REPORT</option>
-                  <option>FINANCIAL_ANALYSIS</option>
-                  <option>JOINT_SUMMARY</option>
-                  <option>RAW_DATA</option>
-                  <option>OTHER</option>
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Change Note</label>
-                <input className="form-input" value={fileMeta.changeNote} onChange={(e) => setFileMeta((p) => ({ ...p, changeNote: e.target.value }))} placeholder="e.g., Updated with Q3 actuals." />
-              </div>
-              <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--muted)' }}>
-                <input type="checkbox" checked={fileMeta.publish} onChange={(e) => setFileMeta((p) => ({ ...p, publish: e.target.checked }))} />
-                Run pre-check
-              </label>
-            </div>
+        {/* Milestone Progress Bar */}
+        <div style={{ flex:'0 0 200px' }}>
+          <div style={{ fontSize:'0.7rem', color:'var(--muted)', marginBottom:'0.25rem', display:'flex', justifyContent:'space-between', fontWeight:600 }}>
+            <span>Milestone Progress</span>
+            <span>{milestonesDone}/{milestonesTotal}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
-            <input type="file" ref={fileInputRef} onChange={handleUpload} style={{ display: 'none' }} />
-            <button className="btn btn-ca" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? <><span className="spinner" />Uploading...</> : '+ Upload File'}
-            </button>
+          <div style={{ height:10, background:'rgba(0,0,0,0.05)', borderRadius:5, overflow:'hidden', border:'1px solid var(--border)' }}>
+            <div style={{ height:'100%', width:`${milestonePercent}%`, background:'linear-gradient(90deg, var(--ca), var(--ds))', borderRadius:5, transition:'width 0.8s cubic-bezier(0.4, 0, 0.2, 1)' }} />
           </div>
-          {files.length === 0 ? (
-            <div className="empty-state" style={{ padding: '4rem' }}>
-              <div className="empty-icon">📁</div>
-              <p>No files uploaded yet.</p>
-            </div>
-          ) : (
-            <div className="card">
-              {files.map((f, i) => (
-                <div key={f.id} style={{ padding: '0.85rem 1.25rem', borderBottom: i < files.length - 1 ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <span style={{ fontSize: '1.3rem' }}>
-                      {f.mime_type?.includes('pdf') ? '📄' : f.mime_type?.includes('sheet') ? '📊' : f.mime_type?.includes('image') ? '🖼️' : '📎'}
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 500, fontSize: '0.88rem' }}>{f.original_name}</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>
-                        {formatFileSize(f.file_size)} · {f.uploaded_by_name} ({f.uploaded_by_team}) · {new Date(f.uploaded_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                  </div>
-                  <a href={workspaceAPI.downloadFile(id, f.id)} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
-                    ⬇ Download
-                  </a>
-                </div>
-              ))}
+        </div>
+
+        {/* Stat Badges */}
+        <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap' }}>
+          <div style={{ textAlign:'center', padding:'0.5rem 1rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius-md)', minWidth:70, boxShadow:'var(--shadow-sm)' }}>
+            <div style={{ fontSize:'1.2rem', fontWeight:800, color:'var(--ca)', fontFamily:'Syne' }}>{Math.round(projectHealth.task_completion_percentage||0)}%</div>
+            <div style={{ fontSize:'0.6rem', color:'var(--muted)', textTransform:'uppercase', fontWeight:700 }}>Tasks</div>
+          </div>
+          <div style={{ textAlign:'center', padding:'0.5rem 1rem', background: (projectHealth.open_conflicts||0)>0?'#FEF2F2':'white', border:`1px solid ${(projectHealth.open_conflicts||0)>0?'#FECACA':'var(--border)'}`, borderRadius:'var(--radius-md)', minWidth:70, boxShadow:'var(--shadow-sm)' }}>
+            <div style={{ fontSize:'1.2rem', fontWeight:800, color:(projectHealth.open_conflicts||0)>0?'var(--danger)':'var(--muted)', fontFamily:'Syne' }}>{projectHealth.open_conflicts||0}</div>
+            <div style={{ fontSize:'0.6rem', color:'var(--muted)', textTransform:'uppercase', fontWeight:700 }}>Conflicts</div>
+          </div>
+          <div style={{ textAlign:'center', padding:'0.5rem 1rem', background: (projectHealth.open_annotations||0)>0?'#FFFBEB':'white', border:`1px solid ${(projectHealth.open_annotations||0)>0?'#FDE68A':'var(--border)'}`, borderRadius:'var(--radius-md)', minWidth:70, boxShadow:'var(--shadow-sm)' }}>
+            <div style={{ fontSize:'1.2rem', fontWeight:800, color:(projectHealth.open_annotations||0)>0?'var(--warning)':'var(--muted)', fontFamily:'Syne' }}>{projectHealth.open_annotations||0}</div>
+            <div style={{ fontSize:'0.6rem', color:'var(--muted)', textTransform:'uppercase', fontWeight:700 }}>Annotations</div>
+          </div>
+          <div style={{ textAlign:'center', padding:'0.5rem 1rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius-md)', minWidth:70, boxShadow:'var(--shadow-sm)' }}>
+            <div style={{ fontSize:'1.2rem', fontWeight:800, color:'var(--ds)', fontFamily:'Syne' }}>{onlineUsers.size}</div>
+            <div style={{ fontSize:'0.6rem', color:'var(--muted)', textTransform:'uppercase', fontWeight:700 }}>Online</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ═══ MAIN 3-COLUMN LAYOUT ═══ */}
+      <div style={{ display:'grid', gridTemplateColumns:'230px 1fr 280px', gap:'1rem', height:'calc(100vh - 280px)' }}>
+
+        {/* ═══ LEFT PANEL: Team ═══ */}
+        <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', padding:'1.25rem 1rem', overflowY:'auto', boxShadow:'var(--shadow-sm)' }}>
+          <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.9rem', marginBottom:'1rem', display:'flex', justifyContent:'space-between', color:'var(--ink)' }}>
+            <span>Project Team</span>
+            <span style={{ fontSize:'0.75rem', fontWeight:500, color:'var(--muted)', background:'var(--paper)', padding:'0.1rem 0.4rem', borderRadius:10 }}>{members.length}</span>
+          </h4>
+          {members.length === 0 && (
+            <div style={{ textAlign:'center', padding:'2rem 0.5rem', color:'var(--muted)', fontSize:'0.8rem' }}>
+              <div style={{ fontSize:'1.5rem', marginBottom:'0.4rem' }}>👥</div>
+              Awaiting member sync...
             </div>
           )}
-        </div>
-      )}
-
-      {/* Tasks */}
-      {tab === 'tasks' && (
-        <div>
-          {['todo', 'in_progress', 'in_review', 'done'].map((status) => {
-            const statusTasks = tasks.filter((t) => t.status === status);
-            const labels = { todo: '📋 To Do', in_progress: '🔄 In Progress', in_review: '🕵️ In Review', done: '✅ Done' };
-            const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
+          {members.map(m => {
+            const isOnline = onlineUsers.has(m.id);
+            const teamColor = (m.team||'').toUpperCase() === 'CA' ? 'var(--ca)' : 'var(--ds)';
+            const teamBg = (m.team||'').toUpperCase() === 'CA' ? '#F0F7FF' : '#F0FDF4';
             return (
-              <div key={status} style={{ marginBottom: '1.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
-                  <h4 style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '0.9rem' }}>{labels[status]}</h4>
-                  <span className="badge badge-muted">{statusTasks.length}</span>
+              <div key={m.id} style={{ display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.6rem', borderRadius:'var(--radius-md)', background: isOnline ? teamBg : 'transparent', marginBottom:'0.4rem', cursor:'pointer', transition:'all 0.2s', border:'1px solid transparent' }}
+                onMouseEnter={e => { e.currentTarget.style.transform='translateX(3px)'; e.currentTarget.style.borderColor='var(--border)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform='none'; e.currentTarget.style.borderColor='transparent'; }}>
+                <div style={{ width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.8rem', fontWeight:700, color:'white', background: teamColor, border:`2px solid ${isOnline ? 'white' : 'transparent'}`, flexShrink:0, boxShadow: isOnline ? '0 0 10px rgba(34,197,94,0.3)' : 'none' }}>
+                  {m.avatar_initials || m.full_name?.[0] || '?'}
                 </div>
-                {statusTasks.length === 0 ? (
-                  <div style={{ padding: '1rem', background: 'white', borderRadius: 'var(--radius-md)', border: '1.5px dashed var(--border)', textAlign: 'center', fontSize: '0.8rem', color: 'var(--muted)' }}>
-                    No tasks here
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:'0.8rem', fontWeight:600, color:'var(--ink)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.full_name}</div>
+                  <div style={{ fontSize:'0.65rem', color:'var(--muted)', fontWeight:500 }}>
+                    <span style={{ color: teamColor }}>{m.team}</span> · {m.workspace_role || m.role || 'member'}
                   </div>
-                ) : statusTasks.map((t) => (
-                  <div key={t.id} className="card" style={{ marginBottom: '0.5rem', padding: '0.85rem 1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500, fontSize: '0.88rem', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.status === 'done' ? 'var(--muted)' : 'inherit' }}>
-                        {t.title}
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.15rem' }}>
-                        {t.assigned_to_name ? `→ ${t.assigned_to_name}` : 'Unassigned'}
-                        {t.due_date && ` · Due ${new Date(t.due_date).toLocaleDateString()}`}
-                        <span className={`badge badge-${t.priority === 'High' ? 'danger' : t.priority === 'Low' ? 'muted' : 'warning'}`} style={{ marginLeft: '0.4rem' }}>{t.priority}</span>
-                      </div>
-                    </div>
-                    {nextStatus[status] && (t.assigned_to_name === user.fullName || t.created_by_name === user.fullName) && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => handleStatusChange(t.id, nextStatus[status])}
-                      >
-                        {status === 'todo' ? 'Start →' : status === 'in_progress' ? 'Review →' : 'Done ✓'}
-                      </button>
-                    )}
-                  </div>
-                ))}
+                </div>
+                <div style={{ width:8, height:8, borderRadius:'50%', background: isOnline ? '#22c55e' : '#D1D5DB', border:'1.5px solid white', flexShrink:0 }} />
               </div>
             );
           })}
         </div>
-      )}
 
-      {/* History */}
-      {tab === 'history' && (
-        <div>
-          {history.length === 0 ? (
-            <div className="empty-state" style={{ padding: '4rem' }}>
-              <div className="empty-icon">📜</div>
-              <p>No history yet.</p>
+        {/* ═══ CENTRE: Tab content area ═══ */}
+        <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'var(--shadow-md)' }}>
+          {/* Tab Bar - Enhanced with horizontal scroll and premium feel */}
+          <div style={{ 
+            display:'flex', borderBottom:'1px solid var(--border)', background:'var(--paper)', 
+            overflowX:'auto', whiteSpace:'nowrap', WebkitOverflowScrolling:'touch',
+            scrollbarWidth: 'none', msOverflowStyle: 'none'
+          }}>
+            <style>{`div::-webkit-scrollbar { display: none; }`}</style>
+            {tabs.map(t => (
+              <button key={t.id} onClick={()=>setTab(t.id)} style={{
+                padding:'0.8rem 1.25rem', border:'none', background:'none', cursor:'pointer',
+                borderBottom: tab===t.id ? '3px solid var(--ca)' : '3px solid transparent',
+                fontWeight: tab===t.id ? 700 : 500, fontSize:'0.85rem', color: tab===t.id ? 'var(--ca)' : 'var(--muted)',
+                display:'flex', alignItems:'center', gap:'0.4rem', transition:'all 0.25s', flexShrink: 0
+              }}>
+                <span style={{ fontSize:'1rem' }}>{t.icon}</span>
+                {t.label}
+                {t.badge > 0 && <span style={{ background:'var(--ca)', color:'white', borderRadius:10, padding:'0 0.4rem', fontSize:'0.6rem', fontWeight:800, marginLeft:'0.2rem' }}>{t.badge}</span>}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab Content */}
+          <div style={{ flex:1, padding:'1rem', overflowY:'auto' }}>
+            {/* HUB TAB — Activity Feed (centre main area per spec 3.8.1) */}
+            {tab === 'hub' && (
+              <HubTab 
+                projectId={id}
+                projectHealth={projectHealth} 
+                activityFeed={activityFeed} 
+                members={members} 
+                onlineUsers={onlineUsers} 
+                files={files}
+                milestones={project.milestones}
+                onRefresh={loadData}
+                onNotify={addNotif}
+              />
+            )}
+            {tab === 'tasks' && <TasksTab projectId={id} tasks={tasks} setTasks={setTasks} members={members} user={user} onNotify={addNotif} socket={socket} onRefresh={loadData} />}
+            {tab === 'files' && <FilesTab projectId={id} files={files} setFiles={setFiles} user={user} onNotify={addNotif} socket={socket} onRefresh={loadData} />}
+            {tab === 'annotations' && <AnnotationsTab projectId={id} files={files} user={user} onNotify={addNotif} />}
+            {tab === 'chat' && <ChatTab projectId={id} messages={messages} setMessages={setMessages} user={user} socket={socket} members={members} onNotify={addNotif} />}
+            {tab === 'conflicts' && <ConflictsTab projectId={id} user={user} onNotify={addNotif} />}
+            {tab === 'audit' && <AuditTab projectId={id} members={members} onNotify={addNotif} />}
+          </div>
+        </div>
+
+        {/* ═══ RIGHT PANEL: Quick Access — Task Board, Files, Annotations, Conflicts, KPI ═══ */}
+        <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem', overflowY:'auto' }}>
+
+          {/* Task Board Mini (Kanban) */}
+          <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', padding:'0.75rem' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.6rem' }}>
+              <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.85rem', margin:0 }}>📋 Task Board</h4>
+              <button className="btn btn-xs btn-ghost" onClick={()=>setTab('tasks')} style={{ fontSize:'0.65rem' }}>See All →</button>
             </div>
-          ) : (
-            <div className="card">
-              {history.map((h, i) => (
-                <div key={i} style={{ padding: '0.85rem 1.25rem', borderBottom: i < history.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--muted)' }}>
-                      {h.change_type.charAt(0).toUpperCase() + h.change_type.slice(1)}
-                    </span>
-                    {h.changed_by_name && (
-                      <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
-                        by {h.changed_by_name} ({h.changed_by_team})
-                      </span>
-                    )}
-                    <span style={{ fontSize: '0.7rem', color: 'var(--muted)', marginLeft: 'auto' }}>
-                      {new Date(h.changed_at).toLocaleString()}
-                    </span>
-                  </div>
-                  {h.field_name && (
-                    <div style={{ fontSize: '0.8rem', marginBottom: '0.3rem' }}>
-                      <strong>{h.field_name}:</strong> {h.old_value || '–'} → {h.new_value || '–'}
-                    </div>
-                  )}
-                  {h.change_note && (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--muted)', fontStyle: 'italic' }}>
-                      {h.change_note}
-                    </div>
-                  )}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.3rem' }}>
+              {[{k:'todo',l:'To Do',c:'var(--muted)'},{k:'in_progress',l:'In Progress',c:'var(--ca)'},{k:'in_review',l:'Review',c:'var(--warning)'},{k:'done',l:'Done',c:'var(--success)'}].map(s=>(
+                <div key={s.k} style={{ padding:'0.3rem 0.4rem', background:'var(--paper)', borderRadius:'var(--radius-sm)', borderLeft:`3px solid ${s.c}` }}>
+                  <div style={{ fontSize:'1rem', fontWeight:700, color:s.c }}>{tasksByStatus[s.k]?.length||0}</div>
+                  <div style={{ fontSize:'0.6rem', color:'var(--muted)' }}>{s.l}</div>
                 </div>
               ))}
             </div>
-          )}
-        </div>
-      )}
+          </div>
 
-      {tab === 'breaches' && (
-        <div>
-          {breaches.length === 0 ? (
-            <div className="empty-state" style={{ padding: '4rem' }}>
-              <div className="empty-icon">✅</div>
-              <p>No compliance breaches logged.</p>
+          {/* Files Quick Access */}
+          <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', padding:'0.75rem' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.5rem' }}>
+              <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.85rem', margin:0 }}>📁 Files</h4>
+              <button className="btn btn-xs btn-ghost" onClick={()=>setTab('files')} style={{ fontSize:'0.65rem' }}>See All →</button>
             </div>
-          ) : (
-            <div className="card">
-              {breaches.map((b, i) => (
-                <div key={b.id} style={{ padding: '0.85rem 1.25rem', borderBottom: i < breaches.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                    <strong>{b.field_name || 'Manual Breach'}</strong>
-                    <span className={`badge ${b.status === 'RESOLVED' ? 'badge-success' : 'badge-danger'}`}>{b.status}</span>
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{b.description}</div>
-                </div>
-              ))}
+            {files.slice(0,4).map(f => (
+              <div key={f.id} style={{ fontSize:'0.72rem', padding:'0.25rem 0', borderBottom:'1px solid var(--border)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                📄 {f.original_name} <span style={{ color:'var(--muted)' }}>· {f.uploaded_by_name}</span>
+              </div>
+            ))}
+            {files.length === 0 && <div style={{ fontSize:'0.72rem', color:'var(--muted)', padding:'0.3rem 0' }}>No files</div>}
+          </div>
+
+          {/* Annotation Engine */}
+          <div onClick={()=>setTab('annotations')} style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', padding:'0.75rem', cursor:'pointer', transition:'all 0.2s' }}
+            onMouseEnter={e=>e.currentTarget.style.borderColor='var(--warning)'}
+            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
+            <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.85rem', margin:'0 0 0.3rem 0' }}>📝 Annotations</h4>
+            <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
+              <div style={{ fontSize:'1.3rem', fontWeight:700, color: (projectHealth.open_annotations||0)>0?'var(--warning)':'var(--muted)' }}>{projectHealth.open_annotations||0}</div>
+              <div style={{ fontSize:'0.7rem', color:'var(--muted)' }}>open annotations requiring resolution</div>
             </div>
-          )}
+          </div>
+
+          {/* Conflict Alerts */}
+          <div onClick={()=>setTab('conflicts')} style={{ background: (projectHealth.open_conflicts||0)>0?'#FEF2F2':'white', borderRadius:'var(--radius-lg)', border:`1.5px solid ${(projectHealth.open_conflicts||0)>0?'#FECACA':'var(--border)'}`, padding:'0.75rem', cursor:'pointer', transition:'all 0.2s' }}
+            onMouseEnter={e=>e.currentTarget.style.transform='translateY(-1px)'}
+            onMouseLeave={e=>e.currentTarget.style.transform='none'}>
+            <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.85rem', margin:'0 0 0.3rem 0', color:(projectHealth.open_conflicts||0)>0?'var(--danger)':'inherit' }}>⚔️ Conflict Alerts</h4>
+            <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
+              <div style={{ fontSize:'1.3rem', fontWeight:700, color: (projectHealth.open_conflicts||0)>0?'var(--danger)':'var(--muted)' }}>{projectHealth.open_conflicts||0}</div>
+              <div style={{ fontSize:'0.7rem', color: (projectHealth.open_conflicts||0)>0?'var(--danger)':'var(--muted)' }}>
+                {(projectHealth.open_conflicts||0)>0 ? 'active conflicts need resolution' : 'no conflicts'}
+              </div>
+            </div>
+          </div>
+
+          {/* KPI Snapshot */}
+          <div style={{ background:'white', borderRadius:'var(--radius-lg)', border:'1.5px solid var(--border)', padding:'0.75rem', flex:'0 0 auto' }}>
+            <h4 style={{ fontFamily:'Syne', fontWeight:700, fontSize:'0.85rem', margin:'0 0 0.5rem 0' }}>📊 KPI Snapshot</h4>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.4rem' }}>
+              <div style={{ padding:'0.35rem', background:'var(--paper)', borderRadius:'var(--radius-sm)', textAlign:'center' }}>
+                <div style={{ fontSize:'1rem', fontWeight:700, color:'var(--ca)' }}>{Math.round(projectHealth.task_completion_percentage||0)}%</div>
+                <div style={{ fontSize:'0.58rem', color:'var(--muted)' }}>Task Completion</div>
+              </div>
+              <div style={{ padding:'0.35rem', background:'var(--paper)', borderRadius:'var(--radius-sm)', textAlign:'center' }}>
+                <div style={{ fontSize:'1rem', fontWeight:700, color:'var(--ds)' }}>{milestonePercent}%</div>
+                <div style={{ fontSize:'0.58rem', color:'var(--muted)' }}>Milestones</div>
+              </div>
+              <div style={{ padding:'0.35rem', background:'var(--paper)', borderRadius:'var(--radius-sm)', textAlign:'center' }}>
+                <div style={{ fontSize:'1rem', fontWeight:700, color:'var(--warning)' }}>{projectHealth.overdue_tasks||0}</div>
+                <div style={{ fontSize:'0.58rem', color:'var(--muted)' }}>Overdue</div>
+              </div>
+              <div style={{ padding:'0.35rem', background:'var(--paper)', borderRadius:'var(--radius-sm)', textAlign:'center' }}>
+                <div style={{ fontSize:'1rem', fontWeight:700, color:'var(--info)' }}>{projectHealth.unread_messages||0}</div>
+                <div style={{ fontSize:'0.58rem', color:'var(--muted)' }}>Unread Msgs</div>
+              </div>
+            </div>
+          </div>
         </div>
-      )}
+      </div>
     </DashboardLayout>
   );
 };

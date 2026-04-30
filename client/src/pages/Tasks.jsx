@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
-import { tasksAPI, adminAPI } from '../services/api';
+import { tasksAPI, projectsAPI } from '../services/api'; // eslint-disable-line no-unused-vars
 import { useAuth } from '../context/AuthContext';
 
 const COLUMNS = [
@@ -17,10 +17,12 @@ const priorityBadge = (p) => ({
   Low:     'badge-muted',
 }[p] || 'badge-muted');
 
-const TaskCard = ({ task, onStatusChange, onAddComment }) => {
+const TaskCard = ({ task, allTasks, onStatusChange, onAddComment }) => {
   const isOverdue = task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date();
+  const activeBlockers = (task.blockedBy || []).map(bid => allTasks.find(ot => ot.id === bid)).filter(ot => ot && ot.status !== 'done');
+  const isBlocked = activeBlockers.length > 0;
   const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
-  const canAdvance = nextStatus[task.status];
+  const canAdvance = nextStatus[task.status] && !isBlocked;
   const [comment, setComment] = useState('');
 
   return (
@@ -43,6 +45,12 @@ const TaskCard = ({ task, onStatusChange, onAddComment }) => {
         </div>
         <span className={`badge ${priorityBadge(task.priority)}`} style={{ flexShrink: 0 }}>{task.priority}</span>
       </div>
+
+      {isOverdue && (
+        <div style={{ fontSize: '0.7rem', color: 'var(--danger)', marginBottom: '0.5rem' }}>
+          ⚠️ Overdue - Constraint Breach
+        </div>
+      )}
 
       {task.description && (
         <p style={{ fontSize: '0.76rem', color: 'var(--muted)', marginBottom: '0.5rem', lineHeight: 1.4 }}>
@@ -82,6 +90,11 @@ const TaskCard = ({ task, onStatusChange, onAddComment }) => {
       <div style={{ marginTop: '0.45rem' }}>
         <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.2rem' }}>
           💬 {task.comments?.length || 0} comments
+          {isBlocked && (
+            <span style={{ marginLeft: '1rem', color: 'var(--danger)', fontWeight: 600 }}>
+              🔒 Blocked by {activeBlockers.length} active task(s)
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '0.4rem' }}>
           <input
@@ -124,7 +137,7 @@ const Tasks = () => {
       const params = viewMine ? { assignedTo: user.id } : {};
       const [tRes, uRes] = await Promise.all([
         tasksAPI.list(params),
-        adminAPI.getUsers({ status: 'active' }),
+        projectsAPI.getTeamUsers({ status: 'active' }),
       ]);
       setTasks(tRes.data.tasks || []);
       setEnvUsers(uRes.data.users || []);
@@ -145,7 +158,7 @@ const Tasks = () => {
   };
 
   const handleCreate = async () => {
-    if (!form.title.trim()) { setCreateError('Task title is required.'); return; }
+    if (form.title.trim().length < 3) { setCreateError('Task title must be at least 3 characters.'); return; }
     setCreateLoading(true); setCreateError('');
     try {
       await tasksAPI.create({
@@ -161,7 +174,8 @@ const Tasks = () => {
       setForm({ title: '', description: '', priority: 'Medium', type: 'OTHER', dueDate: '', assignedTo: '', blockedBy: [] });
       load();
     } catch (e) {
-      setCreateError(e.response?.data?.message || 'Failed to create task.');
+      const msg = e.response?.data?.errors?.[0]?.msg || e.response?.data?.message || 'Failed to create task.';
+      setCreateError(msg);
     }
     setCreateLoading(false);
   };
@@ -212,7 +226,7 @@ const Tasks = () => {
                       No tasks
                     </div>
                   ) : colTasks.map((t) => (
-                    <TaskCard key={t.id} task={t} onStatusChange={handleStatusChange} onAddComment={handleAddComment} />
+                    <TaskCard key={t.id} task={t} allTasks={tasks} onStatusChange={handleStatusChange} onAddComment={handleAddComment} />
                   ))}
                 </div>
               </div>
