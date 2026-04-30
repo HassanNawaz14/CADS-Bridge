@@ -74,16 +74,20 @@ router.get('/', async (req, res) => {
     if (['admin', 'platform_admin'].includes(req.user.role)) {
       baseQuery = `
         SELECT p.id, p.name, p.description, p.status, p.start_date, p.end_date, p.created_at,
-               u.full_name as initiated_by_name, u.team as initiated_by_team
+               u.full_name as initiated_by_name, u.team as initiated_by_team,
+               CASE WHEN pa.id IS NOT NULL THEN 1 ELSE 0 END as approved_by_me
         FROM projects p
         JOIN users u ON u.id = p.initiated_by
+        LEFT JOIN project_approvals pa ON pa.project_id = p.id AND pa.admin_id = @userId
         WHERE p.env_id = @envId
         ${status ? 'AND p.status = @status' : ''}
         ORDER BY p.created_at DESC`;
+      params.userId = { type: sql.UniqueIdentifier, value: req.user.id };
     } else {
       baseQuery = `
         SELECT p.id, p.name, p.description, p.status, p.start_date, p.end_date, p.created_at,
-               u.full_name as initiated_by_name, u.team as initiated_by_team
+               u.full_name as initiated_by_name, u.team as initiated_by_team,
+               0 as approved_by_me
         FROM projects p
         JOIN users u ON u.id = p.initiated_by
         JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = @userId AND pm.is_active = 1
@@ -312,6 +316,7 @@ router.post('/',
         targetType: 'project',
         targetId: projectId,
         targetName: name,
+        projectId: projectId,
         ipAddress: req.ip,
       });
 
@@ -404,6 +409,16 @@ router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, 
            WHERE id = @id`
         );
 
+        // Broadcast project approval to all in environment room
+        const io = req.app.get('io');
+        if (io) {
+          io.to(`env:${req.user.env_id}`).emit('project_status_updated', {
+            projectId: id,
+            status: 'active',
+            name: project.name
+          });
+        }
+
         // Notify all project members
         const members = await trx.request()
           .input('id', sql.UniqueIdentifier, id)
@@ -439,6 +454,7 @@ router.post('/:id/approve', requireRole('admin', 'platform_admin'), async (req, 
       targetType: 'project',
       targetId: id,
       targetName: project.name,
+      projectId: id,
       ipAddress: req.ip,
     });
 
@@ -511,6 +527,7 @@ router.post('/:id/request-changes', requireRole('admin', 'platform_admin'), asyn
       targetType: 'project',
       targetId: id,
       targetName: projResult.recordset[0].name,
+      projectId: id,
       metadata: { reason },
       ipAddress: req.ip,
     });
@@ -575,6 +592,7 @@ router.post('/:id/reject', requireRole('admin', 'platform_admin'), async (req, r
       targetType: 'project',
       targetId: id,
       targetName: projResult.recordset[0].name,
+      projectId: id,
       metadata: { reason },
       ipAddress: req.ip,
     });
@@ -779,6 +797,7 @@ router.post('/:id/complete', async (req, res) => {
       targetType: 'project',
       targetId: id,
       targetName: project.name,
+      projectId: id,
       metadata: { rationaleDocument: fileName },
       ipAddress: req.ip,
     });
@@ -787,6 +806,56 @@ router.post('/:id/complete', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Failed to complete project.' });
+  }
+});
+
+// ── POST /api/projects/:id/milestones/:mid/toggle ────────────────────────
+router.post('/:id/milestones/:mid/toggle', async (req, res) => {
+  try {
+    const { id, mid } = req.params;
+
+    // Check if user is a member or admin
+    const memberCheck = await query(
+      `SELECT pm.id FROM project_members pm 
+       JOIN projects p ON p.id = pm.project_id
+       WHERE pm.project_id = @pid AND pm.user_id = @uid AND pm.is_active = 1`,
+      { pid: { type: sql.UniqueIdentifier, value: id }, uid: { type: sql.UniqueIdentifier, value: req.user.id } }
+    );
+    if (!memberCheck.recordset.length && !['admin', 'platform_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const mResult = await query(
+      `SELECT * FROM project_milestones WHERE id = @mid AND project_id = @pid`,
+      { mid: { type: sql.UniqueIdentifier, value: mid }, pid: { type: sql.UniqueIdentifier, value: id } }
+    );
+    if (!mResult.recordset.length) return res.status(404).json({ success: false, message: 'Milestone not found.' });
+
+    const milestone = mResult.recordset[0];
+    const nextStatus = milestone.is_completed ? 0 : 1;
+
+    await query(
+      `UPDATE project_milestones SET is_completed = @status WHERE id = @mid`,
+      { status: { type: sql.Bit, value: nextStatus }, mid: { type: sql.UniqueIdentifier, value: mid } }
+    );
+
+    // Notify & Audit
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'milestone_updated',
+      targetType: 'milestone',
+      targetId: mid,
+      targetName: milestone.title,
+      projectId: id,
+      metadata: { completed: !!nextStatus },
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, is_completed: !!nextStatus });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update milestone.' });
   }
 });
 

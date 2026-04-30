@@ -7,7 +7,7 @@ const ChatTab = ({ projectId, messages, setMessages, user, socket, members, onNo
   const [sending, setSending] = useState(false);
   const [search, setSearch] = useState('');
   const [taskModal, setTaskModal] = useState(null);
-  const [taskTitle, setTaskTitle] = useState('');
+  const [taskForm, setTaskForm] = useState({ title: '', assignee: '', priority: 'Medium' });
   const chatEnd = useRef();
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior:'smooth' }); }, [messages]);
@@ -25,12 +25,18 @@ const ChatTab = ({ projectId, messages, setMessages, user, socket, members, onNo
   };
 
   const convertToTask = async () => {
-    if (!taskModal || !taskTitle.trim()) return;
+    if (!taskModal || !taskForm.title.trim()) return;
     try {
-      await workspaceAPI.sendMessage(projectId, { content: `[TASK] ${taskTitle}` });
+      await workspaceAPI.convertMessageToTask(projectId, taskModal.id, {
+        title: taskForm.title.trim(),
+        assigneeId: taskForm.assignee || undefined,
+        priority: taskForm.priority,
+        description: `Created from chat message: "${taskModal.content}"`,
+      });
       onNotify('success', 'Task created from message');
-      setTaskModal(null); setTaskTitle('');
-    } catch { onNotify('error', 'Failed to create task'); }
+      setTaskModal(null);
+      setTaskForm({ title: '', assignee: '', priority: 'Medium' });
+    } catch (e) { onNotify('error', e.response?.data?.message || 'Failed to create task'); }
   };
 
   const filtered = search ? messages.filter(m => m.content?.toLowerCase().includes(search.toLowerCase())) : messages;
@@ -68,9 +74,15 @@ const ChatTab = ({ projectId, messages, setMessages, user, socket, members, onNo
               }}>
                 {m.content}
               </div>
+              {m.linked_task_id && (
+                <div style={{ fontSize: '0.65rem', color: 'var(--ca)', marginTop: '0.15rem', fontWeight: 500 }}>📋 Linked to task</div>
+              )}
               <div style={{ display:'flex', gap:'0.3rem', marginTop:'0.2rem', justifyContent:isMe(m)?'flex-end':'flex-start' }}>
                 <button className="btn btn-xs btn-ghost" style={{ fontSize:'0.65rem', padding:'0.1rem 0.3rem' }} onClick={()=>setReplyTo(m)}>↩ Reply</button>
-                <button className="btn btn-xs btn-ghost" style={{ fontSize:'0.65rem', padding:'0.1rem 0.3rem' }} onClick={()=>{setTaskModal(m);setTaskTitle(m.content?.substring(0,50))}}>📋 Task</button>
+                {!m.linked_task_id && (
+                  <button className="btn btn-xs btn-ghost" style={{ fontSize:'0.65rem', padding:'0.1rem 0.3rem' }}
+                    onClick={()=>{setTaskModal(m);setTaskForm({ title: m.content?.substring(0,80) || '', assignee: '', priority: 'Medium' })}}>📋 Task</button>
+                )}
               </div>
             </div>
           </div>
@@ -96,14 +108,39 @@ const ChatTab = ({ projectId, messages, setMessages, user, socket, members, onNo
 
       {/* Task conversion modal */}
       {taskModal && (
-        <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.4)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div style={{ background:'white', borderRadius:'var(--radius-lg)', padding:'1.5rem', width:'400px' }}>
-            <h4 style={{ marginBottom:'1rem' }}>Convert Message to Task</h4>
-            <p style={{ fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.75rem' }}>"{taskModal.content?.substring(0,80)}"</p>
-            <input className="form-input" placeholder="Task title" value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} style={{ marginBottom:'0.75rem' }} />
-            <div style={{ display:'flex', gap:'0.5rem', justifyContent:'flex-end' }}>
+        <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.4)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setTaskModal(null)}>
+          <div style={{ background:'white', borderRadius:'var(--radius-lg)', padding:'1.5rem', width:'440px' }}
+            onClick={e => e.stopPropagation()}>
+            <h4 style={{ marginBottom:'0.5rem', fontFamily:'Syne', fontWeight:700 }}>Convert Message to Task</h4>
+            <p style={{ fontSize:'0.78rem', color:'var(--muted)', marginBottom:'0.75rem', background:'var(--paper)', padding:'0.5rem', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--ca)' }}>
+              "{taskModal.content?.substring(0,120)}{taskModal.content?.length > 120 ? '...' : ''}"
+            </p>
+            <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+              <div>
+                <label className="form-label">Task Title *</label>
+                <input className="form-input" placeholder="Task title" value={taskForm.title}
+                  onChange={e=>setTaskForm(p=>({...p, title: e.target.value}))} />
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.5rem' }}>
+                <div>
+                  <label className="form-label">Assign To</label>
+                  <select className="form-input" value={taskForm.assignee} onChange={e=>setTaskForm(p=>({...p, assignee: e.target.value}))}>
+                    <option value="">Unassigned</option>
+                    {(members||[]).map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.team})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label">Priority</label>
+                  <select className="form-input" value={taskForm.priority} onChange={e=>setTaskForm(p=>({...p, priority: e.target.value}))}>
+                    <option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'0.5rem', justifyContent:'flex-end', marginTop:'1rem' }}>
               <button className="btn btn-ghost btn-sm" onClick={()=>setTaskModal(null)}>Cancel</button>
-              <button className="btn btn-ca btn-sm" onClick={convertToTask} disabled={!taskTitle.trim()}>Create Task</button>
+              <button className="btn btn-ca btn-sm" onClick={convertToTask} disabled={!taskForm.title.trim()}>Create Task</button>
             </div>
           </div>
         </div>

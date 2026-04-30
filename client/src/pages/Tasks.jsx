@@ -17,9 +17,10 @@ const priorityBadge = (p) => ({
   Low:     'badge-muted',
 }[p] || 'badge-muted');
 
-const TaskCard = ({ task, onStatusChange, onAddComment }) => {
+const TaskCard = ({ task, allTasks, onStatusChange, onAddComment }) => {
   const isOverdue = task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date();
-  const isBlocked = task.blockedBy && task.blockedBy.length > 0;
+  const activeBlockers = (task.blockedBy || []).map(bid => allTasks.find(ot => ot.id === bid)).filter(ot => ot && ot.status !== 'done');
+  const isBlocked = activeBlockers.length > 0;
   const nextStatus = { todo: 'in_progress', in_progress: 'in_review', in_review: 'done', done: null };
   const canAdvance = nextStatus[task.status] && !isBlocked;
   const [comment, setComment] = useState('');
@@ -89,9 +90,9 @@ const TaskCard = ({ task, onStatusChange, onAddComment }) => {
       <div style={{ marginTop: '0.45rem' }}>
         <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.2rem' }}>
           💬 {task.comments?.length || 0} comments
-          {task.blockedBy && task.blockedBy.length > 0 && (
-            <span style={{ marginLeft: '1rem', color: 'var(--danger)' }}>
-              🔒 Blocked by {task.blockedBy.length} task{task.blockedBy.length > 1 ? 's' : ''}
+          {isBlocked && (
+            <span style={{ marginLeft: '1rem', color: 'var(--danger)', fontWeight: 600 }}>
+              🔒 Blocked by {activeBlockers.length} active task(s)
             </span>
           )}
         </div>
@@ -157,7 +158,7 @@ const Tasks = () => {
   };
 
   const handleCreate = async () => {
-    if (!form.title.trim()) { setCreateError('Task title is required.'); return; }
+    if (form.title.trim().length < 3) { setCreateError('Task title must be at least 3 characters.'); return; }
     setCreateLoading(true); setCreateError('');
     try {
       await tasksAPI.create({
@@ -173,7 +174,8 @@ const Tasks = () => {
       setForm({ title: '', description: '', priority: 'Medium', type: 'OTHER', dueDate: '', assignedTo: '', blockedBy: [] });
       load();
     } catch (e) {
-      setCreateError(e.response?.data?.message || 'Failed to create task.');
+      const msg = e.response?.data?.errors?.[0]?.msg || e.response?.data?.message || 'Failed to create task.';
+      setCreateError(msg);
     }
     setCreateLoading(false);
   };
@@ -224,7 +226,7 @@ const Tasks = () => {
                       No tasks
                     </div>
                   ) : colTasks.map((t) => (
-                    <TaskCard key={t.id} task={t} onStatusChange={handleStatusChange} onAddComment={handleAddComment} />
+                    <TaskCard key={t.id} task={t} allTasks={tasks} onStatusChange={handleStatusChange} onAddComment={handleAddComment} />
                   ))}
                 </div>
               </div>

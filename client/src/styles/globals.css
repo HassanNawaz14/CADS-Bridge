@@ -19,7 +19,8 @@
   --muted: #6b7280;
   --border: rgba(10, 12, 20, 0.1);
   --border-strong: rgba(10, 12, 20, 0.18);
-  --sidebar-w: 256px;
+  --sidebar-w: 264px;
+  --sidebar-collapsed-w: 88px;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -487,6 +488,11 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.page-layout.sidebar-collapsed .main-content {
+  margin-left: var(--sidebar-collapsed-w);
 }
 
 .topbar {

@@ -14,13 +14,14 @@ const auditLog = async ({
   targetName = null,
   metadata = null,
   ipAddress = null,
+  projectId = null,
 }) => {
   try {
     await query(
       `INSERT INTO audit_logs
-         (id, env_id, actor_id, action_type, target_type, target_id, target_name, metadata, ip_address)
+         (id, env_id, actor_id, action_type, target_type, target_id, target_name, metadata, ip_address, project_id)
        VALUES
-         (NEWID(), @envId, @actorId, @actionType, @targetType, @targetId, @targetName, @metadata, @ip)`,
+         (NEWID(), @envId, @actorId, @actionType, @targetType, @targetId, @targetName, @metadata, @ip, @pid)`,
       {
         envId:      { type: sql.UniqueIdentifier, value: envId },
         actorId:    { type: sql.UniqueIdentifier, value: actorId },
@@ -30,6 +31,7 @@ const auditLog = async ({
         targetName: { type: sql.NVarChar(255),     value: targetName },
         metadata:   { type: sql.NVarChar(sql.MAX), value: metadata ? JSON.stringify(metadata) : null },
         ip:         { type: sql.NVarChar(45),      value: ipAddress },
+        pid:        { type: sql.UniqueIdentifier, value: projectId },
       }
     );
   } catch (err) {

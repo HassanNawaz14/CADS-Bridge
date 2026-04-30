@@ -600,6 +600,75 @@ if (!IS_VERCEL && server) {
                  is_active BIT NOT NULL DEFAULT 1
                );`);
 
+    // ── Feature 3.8: project_messages columns ───────────────────────────
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'parent_message_id')
+               BEGIN
+                 ALTER TABLE project_messages ADD parent_message_id UNIQUEIDENTIFIER NULL REFERENCES project_messages(id);
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'message_type')
+               BEGIN
+                 ALTER TABLE project_messages ADD message_type NVARCHAR(20) NOT NULL DEFAULT 'TEXT' CHECK (message_type IN ('TEXT','FILE_ATTACHMENT','TASK_REFERENCE','ANNOTATION_REFERENCE'));
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'attachment_data')
+               BEGIN
+                 ALTER TABLE project_messages ADD attachment_data NVARCHAR(MAX) NULL;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'is_archived')
+               BEGIN
+                 ALTER TABLE project_messages ADD is_archived BIT NOT NULL DEFAULT 0;
+               END`);
+
+    await query(`IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+                 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'linked_task_id')
+               BEGIN
+                 ALTER TABLE project_messages ADD linked_task_id UNIQUEIDENTIFIER NULL REFERENCES tasks(id);
+               END`);
+
+
+    // ── Feature 3.8: Document Annotations tables ──────────────────────────
+    const checkDocs = await query(`SELECT COUNT(*) as count FROM sysobjects WHERE name='document_annotations' AND xtype='U'`);
+    if (checkDocs.recordset[0].count === 0) {
+      await query(`CREATE TABLE document_annotations (
+                 id                UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 env_id            UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+                 project_id        UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 document_id       UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+                 document_version  NVARCHAR(20)     NULL,
+                 selected_text     NVARCHAR(MAX)    NULL,
+                 position_start    INT              NULL,
+                 position_end      INT              NULL,
+                 author_id         UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 type              NVARCHAR(20)     NOT NULL CHECK (type IN ('FINANCIAL_CONSTRAINT','REGULATORY_FLAG','CLARIFICATION','APPROVAL')),
+                 body              NVARCHAR(MAX)    NOT NULL,
+                 status            NVARCHAR(20)     NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
+                 requires_resolution BIT            NOT NULL DEFAULT 0,
+                 resolved_at       DATETIME2        NULL,
+                 resolved_by       UNIQUEIDENTIFIER NULL REFERENCES users(id),
+                 linked_task_id    UNIQUEIDENTIFIER NULL REFERENCES tasks(id),
+                 created_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+                 updated_at        DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+               );`);
+    }
+
+    const checkReplies = await query(`SELECT COUNT(*) as count FROM sysobjects WHERE name='annotation_replies' AND xtype='U'`);
+    if (checkReplies.recordset[0].count === 0) {
+      await query(`CREATE TABLE annotation_replies (
+                 id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                 annotation_id  UNIQUEIDENTIFIER NOT NULL REFERENCES document_annotations(id) ON DELETE CASCADE,
+                 author_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+                 reply_text     NVARCHAR(MAX)    NOT NULL,
+                 created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+               );`);
+    }
+
+
     // ── Feature 3.8: Workspace activity feed table ──────────────────────
     await query(`IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_activity_feed' AND xtype='U')
                CREATE TABLE workspace_activity_feed (

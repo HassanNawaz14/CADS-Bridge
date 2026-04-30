@@ -7,11 +7,16 @@ import GlossaryTooltipScanner from './GlossaryTooltipScanner';
 
 const DashboardLayout = ({ children, title, subtitle }) => {
   const [showProjectModal, setShowProjectModal] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   return (
     <GlossaryProvider>
-      <div className="page-layout">
-        <Sidebar onNewProject={() => setShowProjectModal(true)} />
+      <div className={`page-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        <Sidebar 
+          onNewProject={() => setShowProjectModal(true)} 
+          isCollapsed={isSidebarCollapsed}
+          onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        />
         <div className="main-content">
           <Topbar title={title} subtitle={subtitle} />
           <div className="page-body">{children}</div>

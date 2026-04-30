@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { workspaceAPI } from '../../services/api';
 import io from 'socket.io-client';
 
-const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
+const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket, onRefresh }) => {
   const [uploading, setUploading] = useState(false);
   const [fileMeta, setFileMeta] = useState({ domain:'JOINT', fileType:'MODEL_REPORT', changeNote:'', publish:false });
   const [editorOpen, setEditorOpen] = useState(null);
@@ -88,6 +88,10 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    if (fileMeta.publish && (!fileMeta.changeNote || fileMeta.changeNote.length < 10)) {
+      onNotify('error', 'Change note (min 10 chars) is required for pre-check publication');
+      return;
+    }
     setUploading(true);
     try {
       const fd = new FormData();
@@ -102,8 +106,16 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
       setFileMeta({ domain:'JOINT', fileType:'MODEL_REPORT', changeNote:'', publish:false });
       fileRef.current.value = '';
       onNotify('success', 'File uploaded successfully');
-    } catch { onNotify('error', 'Upload failed'); }
-    finally { setUploading(false); }
+      onRefresh?.();
+    } catch (e) {
+      if (e.response?.data?.precheck) {
+        const v = e.response.data.precheck.violations;
+        onNotify('error', `Pre-check failed: ${v.length} violations found.`);
+        console.error('Regulatory violations:', v);
+      } else {
+        onNotify('error', e.response?.data?.message || 'Upload failed');
+      }
+    } finally { setUploading(false); }
   };
 
   const openEditor = async (fid) => {
@@ -111,7 +123,7 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
       const r = await workspaceAPI.getFileContent(projectId, fid);
       setEditorContent(r.data?.content || '');
       setEditorOpen(fid);
-    } catch { onNotify('error', 'Failed to open file'); }
+    } catch (e) { onNotify('error', e.response?.data?.message || 'Failed to open file'); }
   };
 
   const saveEditor = async () => {
@@ -121,7 +133,8 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
       // Refresh files list
       const r = await workspaceAPI.getFiles(projectId);
       setFiles(r.data?.files || []);
-    } catch { onNotify('error', 'Save failed'); }
+      onRefresh?.();
+    } catch (e) { onNotify('error', e.response?.data?.message || 'Save failed'); }
   };
 
   const closeEditor = () => {
@@ -131,13 +144,13 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
   };
 
   const lockFile = async (fid) => {
-    try { await workspaceAPI.lockFile(projectId, fid); onNotify('success', 'File locked'); const r = await workspaceAPI.getFiles(projectId); setFiles(r.data?.files||[]); }
-    catch { onNotify('error', 'Lock failed'); }
+    try { await workspaceAPI.lockFile(projectId, fid); onNotify('success', 'File locked'); const r = await workspaceAPI.getFiles(projectId); setFiles(r.data?.files||[]); onRefresh?.(); }
+    catch (e) { onNotify('error', e.response?.data?.message || 'Lock failed'); }
   };
 
   const unlockFile = async (fid) => {
-    try { await workspaceAPI.unlockFile(projectId, fid); onNotify('success', 'File unlocked'); const r = await workspaceAPI.getFiles(projectId); setFiles(r.data?.files||[]); }
-    catch { onNotify('error', 'Unlock failed'); }
+    try { await workspaceAPI.unlockFile(projectId, fid); onNotify('success', 'File unlocked'); const r = await workspaceAPI.getFiles(projectId); setFiles(r.data?.files||[]); onRefresh?.(); }
+    catch (e) { onNotify('error', e.response?.data?.message || 'Unlock failed'); }
   };
 
   const loadVersions = async (fid) => {
@@ -154,7 +167,20 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
       await workspaceAPI.restoreFileVersion(projectId, fid, vid);
       onNotify('success', 'Version restored');
       loadVersions(fid);
-    } catch { onNotify('error', 'Restore failed'); }
+    } catch { onNotify?.('error', 'Restore failed'); }
+  };
+
+  const handleDelete = async (fid, name) => {
+    if (!window.confirm(`Are you sure you want to delete "${name}"? This will permanently remove all version history and annotations.`)) return;
+    try {
+      await workspaceAPI.deleteFile(projectId, fid);
+      onNotify('success', 'File deleted successfully');
+      const r = await workspaceAPI.getFiles(projectId);
+      setFiles(r.data?.files || []);
+      onRefresh?.();
+    } catch (e) {
+      onNotify('error', e.response?.data?.message || 'Delete failed');
+    }
   };
 
   const currentFile = files.find(f => f.id === editorOpen);
@@ -185,9 +211,10 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
           </div>
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:'1rem' }}>
-          <label style={{ fontSize:'0.8rem', display:'flex', alignItems:'center', gap:'0.3rem' }}>
+          <label style={{ fontSize:'0.8rem', display:'flex', alignItems:'center', gap:'0.3rem', cursor:'pointer' }} title="Runs regulatory rules against data before publishing">
             <input type="checkbox" checked={fileMeta.publish} onChange={e=>setFileMeta(p=>({...p, publish:e.target.checked}))} /> Pre-check publication
           </label>
+          {fileMeta.publish && <span style={{ fontSize:'0.7rem', color:'var(--warning)', fontWeight:600 }}>⚠️ Requires min 10 char note</span>}
           <input type="file" ref={fileRef} onChange={handleUpload} style={{ display:'none' }} />
           <button className="btn btn-ca btn-sm" onClick={()=>fileRef.current?.click()} disabled={uploading}>
             {uploading ? '⏳ Uploading...' : '📁 Upload File'}
@@ -216,7 +243,10 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket }) => {
                 <button className="btn btn-xs btn-ghost" onClick={()=>loadVersions(f.id)}>📋 Versions</button>
                 {!f.is_locked && <button className="btn btn-xs btn-ghost" onClick={()=>lockFile(f.id)}>🔒 Lock</button>}
                 {f.is_locked && isLockOwner(f) && <button className="btn btn-xs btn-ghost" style={{ color:'var(--success)' }} onClick={()=>unlockFile(f.id)}>🔓 Unlock</button>}
-                <a className="btn btn-xs btn-ghost" href={`${process.env.REACT_APP_API_URL||'http://localhost:5000'}/api/projects/${projectId}/files/${f.id}/download`} target="_blank" rel="noreferrer">⬇️</a>
+                <a className="btn btn-xs btn-ghost" href={`${process.env.REACT_APP_API_URL||'http://localhost:5000'}/api/projects/${projectId}/files/${f.id}/download`} target="_blank" rel="noreferrer" title="Download">⬇️</a>
+                {(user?.role === 'admin' || user?.role === 'platform_admin' || f.uploaded_by === user?.id) && (
+                  <button className="btn btn-xs btn-ghost" style={{ color:'var(--danger)' }} onClick={()=>handleDelete(f.id, f.original_name)} title="Delete File">🗑️</button>
+                )}
               </div>
             </div>
             {showVersions===f.id && (

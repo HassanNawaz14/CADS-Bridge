@@ -10,13 +10,11 @@ const AuditTab = ({ projectId, members, onNotify }) => {
   const load = async () => {
     try {
       const [hRes, sRes] = await Promise.all([
-        workspaceAPI.getActivityFeed(projectId, { limit: 100 }),
-        fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/projects/${projectId}/workspace/audit/summary`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
-        }).then(r => r.json())
+        workspaceAPI.getAuditHistory(projectId, { limit: 100 }),
+        workspaceAPI.getAuditSummary(projectId)
       ]);
-      setHistory(hRes.data?.activities || []);
-      setSummary(sRes.summary || []);
+      setHistory(hRes.data?.audits || []);
+      setSummary(sRes.data?.summary || []);
     } catch { onNotify('error', 'Failed to load audit data'); }
   };
 
@@ -24,10 +22,8 @@ const AuditTab = ({ projectId, members, onNotify }) => {
 
   const exportCSV = async () => {
     try {
-      const r = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/projects/${projectId}/workspace/audit/export?format=csv`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
-      });
-      const blob = await r.blob();
+      const r = await workspaceAPI.exportAuditHistory(projectId, { format: 'csv' });
+      const blob = new Blob([r.data], { type: 'text/csv' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -40,7 +36,18 @@ const AuditTab = ({ projectId, members, onNotify }) => {
 
   const filtered = history.filter(h => {
     if (filters.userId && h.actor_id !== filters.userId) return false;
-    if (filters.actionType && h.activity_type !== filters.actionType && h.action_type !== filters.actionType) return false;
+    const type = h.action_type || h.activity_type;
+    if (filters.actionType && type !== filters.actionType) return false;
+    if (filters.dateFrom) {
+      const d = new Date(h.created_at || h.timestamp);
+      if (d < new Date(filters.dateFrom)) return false;
+    }
+    if (filters.dateTo) {
+      const d = new Date(h.created_at || h.timestamp);
+      const endOfDay = new Date(filters.dateTo);
+      endOfDay.setHours(23, 59, 59, 999);
+      if (d > endOfDay) return false;
+    }
     return true;
   });
 
@@ -68,11 +75,18 @@ const AuditTab = ({ projectId, members, onNotify }) => {
             <select className="form-input" style={{ flex:1, fontSize:'0.8rem' }} value={filters.actionType} onChange={e=>setFilters(p=>({...p,actionType:e.target.value}))}>
               <option value="">All Actions</option>
               <option value="file_upload">File Upload</option>
+              <option value="file_locked">File Lock</option>
+              <option value="file_content_updated">File Update</option>
               <option value="message_sent">Message</option>
               <option value="task_created">Task Created</option>
+              <option value="task_status_updated">Task Progress</option>
               <option value="annotation_created">Annotation</option>
-              <option value="conflict_detection_run">Conflict Detection</option>
+              <option value="annotation_resolved">Resolution</option>
+              <option value="breach_resolved">Constraint Fixed</option>
+              <option value="regulatory_precheck_run">Pre-check Run</option>
             </select>
+            <input type="date" className="form-input" style={{ flex:1, fontSize:'0.8rem' }} value={filters.dateFrom} onChange={e=>setFilters(p=>({...p,dateFrom:e.target.value}))} placeholder="From" title="From date" />
+            <input type="date" className="form-input" style={{ flex:1, fontSize:'0.8rem' }} value={filters.dateTo} onChange={e=>setFilters(p=>({...p,dateTo:e.target.value}))} placeholder="To" title="To date" />
           </div>
 
           {/* Timeline */}
@@ -80,15 +94,18 @@ const AuditTab = ({ projectId, members, onNotify }) => {
             {filtered.length === 0 ? (
               <div style={{ textAlign:'center', padding:'3rem', color:'var(--muted)' }}>📜 No audit records found</div>
             ) : filtered.map((h,i) => (
-              <div key={h.id||i} style={{ display:'flex', gap:'0.75rem', padding:'0.6rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius-md)', fontSize:'0.8rem' }}>
+              <div key={h.id||i} style={{ display:'flex', gap:'0.75rem', padding:'0.6rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius-md)', fontSize:'0.8rem', boxShadow:'var(--shadow-sm)' }}>
                 <div style={{ width:'6px', borderRadius:'3px', background:`var(--${h.actor_team==='CA'?'ca':h.actor_team==='DS'?'ds':'muted'})`, flexShrink:0 }} />
                 <div style={{ flex:1 }}>
                   <div style={{ display:'flex', justifyContent:'space-between' }}>
                     <strong>{h.actor_name||h.user_name}</strong>
                     <span style={{ fontSize:'0.7rem', color:'var(--muted)' }}>{fmt(h.created_at||h.timestamp)}</span>
                   </div>
-                  <div style={{ color:'var(--muted)', marginTop:'0.2rem' }}>
-                    {h.activity_type||h.action_type}: {h.description||h.target_name||'—'}
+                  <div style={{ color:'var(--text)', marginTop:'0.2rem', fontWeight:500 }}>
+                    {h.action_type?.replace(/_/g, ' ').toUpperCase() || h.activity_type?.replace(/_/g, ' ').toUpperCase()}
+                  </div>
+                  <div style={{ color:'var(--muted)', fontSize:'0.75rem' }}>
+                    {h.target_name || h.description || h.target_type || '—'}
                   </div>
                 </div>
               </div>

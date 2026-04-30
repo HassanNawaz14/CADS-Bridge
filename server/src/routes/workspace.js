@@ -1,10 +1,14 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true });
 const path = require('path');
+const fs = require('fs').promises;
+const axios = require('axios');
+const cloudinary = require('cloudinary').v2;
 const { query, sql } = require('../db');
 const { authenticate } = require('../middleware/auth');
 const { handleUpload } = require('../middleware/upload');
 const { auditLog } = require('../utils/auditLog');
+const { notify } = require('../utils/notify');
 
 router.use(authenticate);
 
@@ -148,6 +152,7 @@ router.post('/messages', async (req, res) => {
       actionType: 'message_sent',
       targetType: 'project',
       targetId: req.params.projectId,
+      projectId: req.params.projectId,
       ipAddress: req.ip,
     });
 
@@ -182,59 +187,104 @@ router.get('/files', async (req, res) => {
 router.post('/files', handleUpload('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
-    const { domain = 'JOINT', fileType = 'OTHER', changeNote = null, versionNumber = null, publish = false, dataSnapshot = null, fileId = null } = req.body;
+    const { domain = 'JOINT', fileType = 'OTHER', changeNote = null, versionNumber = null, publish: rawPublish = 'false', dataSnapshot = null, fileId = null } = req.body;
+    // FormData sends all values as strings — "false" is truthy in JS, so parse explicitly
+    const publish = rawPublish === true || rawPublish === 'true';
 
     if (publish && (!changeNote || String(changeNote).trim().length < 10)) {
       return res.status(400).json({ success: false, message: 'changeNote is required (min 10 chars) for publishing.' });
     }
 
     let violations = [];
-    if (publish && dataSnapshot) {
-      const rules = await query(
-        `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
-         FROM regulatory_rules
-         WHERE env_id = @envId AND (project_id IS NULL OR project_id = @projectId)`,
-        {
-          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
-          projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+    let precheckResult = { passed: true, skipped: false };
+    if (publish) {
+      if (!dataSnapshot) {
+        precheckResult.skipped = true;
+      } else {
+        const rules = await query(
+          `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
+           FROM regulatory_rules
+           WHERE env_id = @envId AND (project_id IS NULL OR project_id = @projectId)`,
+          {
+            envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+            projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+          }
+        );
+        const snapshot = typeof dataSnapshot === 'string' ? JSON.parse(dataSnapshot) : dataSnapshot;
+        for (const rule of rules.recordset) {
+          const val = snapshot?.[rule.field_name];
+          if (val === undefined || val === null || Number.isNaN(Number(val))) continue;
+          if (compareRule(rule.operator, Number(val), Number(rule.threshold_value))) {
+            violations.push({
+              ruleId: rule.id,
+              fieldName: rule.field_name,
+              value: Number(val),
+              threshold: Number(rule.threshold_value),
+              severity: rule.severity,
+              description: rule.description,
+              regulatoryReference: rule.regulatory_reference,
+            });
+          }
         }
-      );
-      const snapshot = typeof dataSnapshot === 'string' ? JSON.parse(dataSnapshot) : dataSnapshot;
-      for (const rule of rules.recordset) {
-        const val = snapshot?.[rule.field_name];
-        if (val === undefined || val === null || Number.isNaN(Number(val))) continue;
-        if (compareRule(rule.operator, Number(val), Number(rule.threshold_value))) {
-          violations.push({
-            ruleId: rule.id,
-            fieldName: rule.field_name,
-            value: Number(val),
-            threshold: Number(rule.threshold_value),
-            severity: rule.severity,
-            description: rule.description,
-            regulatoryReference: rule.regulatory_reference,
+        await auditLog({
+          envId: req.user.env_id,
+          actorId: req.user.id,
+          actionType: 'regulatory_precheck_run',
+          targetType: 'project',
+          targetId: req.params.projectId,
+          projectId: req.params.projectId,
+          metadata: { passed: violations.length === 0, violations: violations.length },
+          ipAddress: req.ip,
+        });
+        if (violations.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Publication blocked by regulatory pre-check.',
+            precheck: { passed: false, violations },
           });
         }
-      }
-      await auditLog({
-        envId: req.user.env_id,
-        actorId: req.user.id,
-        actionType: 'regulatory_precheck_run',
-        targetType: 'project',
-        targetId: req.params.projectId,
-        metadata: { passed: violations.length === 0, violations: violations.length },
-        ipAddress: req.ip,
-      });
-      if (violations.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Publication blocked by regulatory pre-check.',
-          precheck: { passed: false, violations },
-        });
       }
     }
 
     let documentId = fileId;
     let currentVersion = '1.0';
+    let fileContent = null;
+
+    // Detect if this is a text-based file we should index for inline editing/annotation
+    const isText = req.file.mimetype.startsWith('text/') || 
+                   req.file.mimetype === 'application/json' || 
+                   req.file.originalname.endsWith('.csv') ||
+                   req.file.originalname.endsWith('.txt') ||
+                   req.file.originalname.endsWith('.md');
+
+    if (isText) {
+      try {
+        let fetchUrl = req.file.path;
+        // Fix for Windows mangling https:// into C:\...\https:\...
+        if (fetchUrl.includes('http') && !fetchUrl.startsWith('http')) {
+          const startIdx = fetchUrl.indexOf('http');
+          fetchUrl = fetchUrl.substring(startIdx).replace(/\\/g, '/');
+          // Fix double slash after protocol if mangled
+          if (fetchUrl.includes(':/') && !fetchUrl.includes('://')) {
+            fetchUrl = fetchUrl.replace(':/', '://');
+          }
+        }
+
+        if (fetchUrl.startsWith('http')) {
+          const response = await axios.get(fetchUrl, { 
+            responseType: 'text',
+            timeout: 10000,
+            headers: { 'Accept': 'text/plain, application/json, */*' }
+          });
+          fileContent = typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2);
+        } else {
+          fileContent = await fs.readFile(req.file.path, 'utf8');
+        }
+      } catch (e) {
+        console.error('Failed to read/fetch file content during upload:', e.message);
+      }
+    }
+
     if (documentId) {
       const existing = await query(
         `SELECT id FROM project_files WHERE id = @id AND project_id = @pid`,
@@ -246,6 +296,21 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       if (!existing.recordset.length) {
         return res.status(404).json({ success: false, message: 'Base document for new version not found.' });
       }
+
+      // Update main file record with latest content and path
+      await query(
+        `UPDATE project_files 
+         SET file_path = @fpath, file_size = @size, mime_type = @mime, content = @content, uploaded_at = GETUTCDATE()
+         WHERE id = @id`,
+        {
+          id: { type: sql.UniqueIdentifier, value: documentId },
+          fpath: { type: sql.NVarChar, value: req.file.path },
+          size: { type: sql.BigInt, value: req.file.size },
+          mime: { type: sql.NVarChar, value: req.file.mimetype },
+          content: { type: sql.NVarChar(sql.MAX), value: fileContent },
+        }
+      );
+
       const lastVersion = await query(
         `SELECT TOP 1 version_number
          FROM project_file_versions
@@ -256,9 +321,9 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       currentVersion = nextVersion(lastVersion.recordset[0]?.version_number || '1.0');
     } else {
       const result = await query(
-        `INSERT INTO project_files (id, project_id, uploaded_by, file_name, original_name, file_size, mime_type, file_path, domain, file_type)
+        `INSERT INTO project_files (id, project_id, uploaded_by, file_name, original_name, file_size, mime_type, file_path, domain, file_type, content)
          OUTPUT INSERTED.id, INSERTED.original_name, INSERTED.file_size, INSERTED.mime_type, INSERTED.uploaded_at
-         VALUES (NEWID(), @pid, @uid, @fname, @oname, @size, @mime, @fpath, @domain, @fileType)`,
+         VALUES (NEWID(), @pid, @uid, @fname, @oname, @size, @mime, @fpath, @domain, @fileType, @content)`,
         {
           pid:   { type: sql.UniqueIdentifier, value: req.params.projectId },
           uid:   { type: sql.UniqueIdentifier, value: req.user.id },
@@ -269,6 +334,7 @@ router.post('/files', handleUpload('file'), async (req, res) => {
           fpath: { type: sql.NVarChar, value: req.file.path },
           domain: { type: sql.NVarChar(10), value: domain },
           fileType: { type: sql.NVarChar(30), value: fileType },
+          content: { type: sql.NVarChar(sql.MAX), value: fileContent },
         }
       );
       documentId = result.recordset[0].id;
@@ -308,8 +374,8 @@ router.post('/files', handleUpload('file'), async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`project:${req.params.projectId}`).emit('new_file', file);
-      io.to(`project:${req.params.projectId}`).emit('activity_update', {
-        action_type: 'file_upload',
+      io.to(`project:${req.params.projectId}`).emit('workspace_activity', {
+        activity_type: 'file_upload',
         target_type: 'file',
         target_name: req.file.originalname,
         actor_name: req.user.full_name,
@@ -325,6 +391,7 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       targetType: 'file',
       targetId: documentId,
       targetName: req.file.originalname,
+      projectId: req.params.projectId,
       metadata: { projectId: req.params.projectId, size: req.file.size, versionNumber: effectiveVersion, fileType, violations: violations.length },
       ipAddress: req.ip,
     });
@@ -368,6 +435,17 @@ router.post('/files/:fileId/lock', async (req, res) => {
       });
     }
 
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'file_locked',
+      targetType: 'file',
+      targetId: req.params.fileId,
+      projectId: req.params.projectId,
+      metadata: { duration },
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, locked: true, expiresAt: expiresAt.toISOString() });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to lock file.' });
@@ -398,9 +476,94 @@ router.post('/files/:fileId/unlock', async (req, res) => {
       io.to(`project:${req.params.projectId}`).emit('file_unlocked', { fileId: req.params.fileId });
     }
 
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'file_unlocked',
+      targetType: 'file',
+      targetId: req.params.fileId,
+      projectId: req.params.projectId,
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, unlocked: true });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to unlock file.' });
+  }
+});
+
+// ── DELETE /api/projects/:projectId/files/:fileId ────────────────────────
+router.delete('/files/:fileId', async (req, res) => {
+  try {
+    const { projectId, fileId } = req.params;
+
+    // Check if file exists and user has permission (admin or uploader)
+    const fileResult = await query(
+      `SELECT pf.id, pf.file_path, pf.uploaded_by, pf.original_name, p.env_id 
+       FROM project_files pf
+       JOIN projects p ON p.id = pf.project_id
+       WHERE pf.id = @fileId AND pf.project_id = @projectId`,
+      { fileId: { type: sql.UniqueIdentifier, value: fileId }, projectId: { type: sql.UniqueIdentifier, value: projectId } }
+    );
+
+    if (!fileResult.recordset.length) {
+      return res.status(404).json({ success: false, message: 'File not found.' });
+    }
+
+    const file = fileResult.recordset[0];
+
+    // Permission check
+    const isAdmin = ['admin', 'platform_admin'].includes(req.user.role);
+    if (!isAdmin && file.uploaded_by !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Only an admin or the uploader can delete this file.' });
+    }
+
+    // Delete versions
+    await query(`DELETE FROM project_file_versions WHERE file_id = @fileId`, { fileId: { type: sql.UniqueIdentifier, value: fileId } });
+    
+    // Delete annotations and replies
+    const annIds = await query(`SELECT id FROM document_annotations WHERE document_id = @fileId`, { fileId: { type: sql.UniqueIdentifier, value: fileId } });
+    for (const ann of annIds.recordset) {
+      await query(`DELETE FROM annotation_replies WHERE annotation_id = @id`, { id: { type: sql.UniqueIdentifier, value: ann.id } });
+    }
+    await query(`DELETE FROM document_annotations WHERE document_id = @fileId`, { fileId: { type: sql.UniqueIdentifier, value: fileId } });
+
+    // Delete main file record
+    await query(`DELETE FROM project_files WHERE id = @fileId`, { fileId: { type: sql.UniqueIdentifier, value: fileId } });
+
+    // Delete physical file or remote cloud file
+    try {
+      if (file.file_path) {
+        if (file.file_path.startsWith('http')) {
+          // Cloudinary deletion
+          // Note: In CloudinaryStorage, pf.file_name usually contains the public_id
+          const publicId = file.file_path.split('/').pop().split('.')[0]; 
+          // Better: use the filename stored which is the public_id from CloudinaryStorage
+          const actualPublicId = file.file_name; 
+          await cloudinary.uploader.destroy(actualPublicId);
+        } else {
+          await fs.unlink(file.file_path);
+        }
+      }
+    } catch (e) {
+      console.warn('Physical/Cloud file delete failed:', e.message);
+    }
+
+    await auditLog({
+      envId: file.env_id,
+      actorId: req.user.id,
+      actionType: 'file_deleted',
+      targetType: 'file',
+      targetId: fileId,
+      targetName: file.original_name,
+      projectId: projectId,
+      ipAddress: req.ip,
+    });
+
+    res.json({ success: true, message: 'File and all associated data deleted successfully.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to delete file.' });
   }
 });
 
@@ -474,6 +637,16 @@ router.put('/files/:fileId/content', async (req, res) => {
         updatedAt: new Date().toISOString(),
       });
     }
+
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'file_content_updated',
+      targetType: 'file',
+      targetId: req.params.fileId,
+      projectId: req.params.projectId,
+      ipAddress: req.ip,
+    });
 
     res.json({ success: true });
   } catch (err) {
@@ -606,6 +779,16 @@ router.patch('/breaches/:breachId/resolve', async (req, res) => {
         resolvedBy: { type: sql.UniqueIdentifier, value: req.user.id },
       }
     );
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'breach_resolved',
+      targetType: 'breach',
+      targetId: breachId,
+      projectId: req.params.projectId,
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, message: 'Breach resolved.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to resolve breach.' });
@@ -639,7 +822,7 @@ router.get('/annotations', async (req, res) => {
               ar.id as reply_id, ar.reply_text, ar.created_at as reply_created_at,
               ru.full_name as reply_author_name, ru.team as reply_author_team
        FROM document_annotations da
-       JOIN users u ON u.id = da.author_id
+       LEFT JOIN users u ON u.id = da.author_id
        LEFT JOIN annotation_replies ar ON ar.annotation_id = da.id
        LEFT JOIN users ru ON ru.id = ar.author_id
        ${whereClause}
@@ -773,15 +956,14 @@ router.post('/annotations', async (req, res) => {
 
     // Notify document owner
     if (documentOwnerId !== req.user.id) {
-      await query(
-        `INSERT INTO notifications (id, user_id, type, title, body, ref_id)
-         VALUES (NEWID(), @userId, 'annotation_created', 'New annotation on your document',
-                 'A new ${type.toLowerCase()} annotation was added to your document.', @refId)`,
-        {
-          userId: { type: sql.UniqueIdentifier, value: documentOwnerId },
-          refId: { type: sql.NVarChar, value: annotation.id },
-        }
-      );
+      await notify({
+        userId: documentOwnerId,
+        type: 'annotation_created',
+        title: 'New annotation on your document',
+        body: `A new ${type.toLowerCase()} annotation was added to your document.`,
+        refId: annotation.id,
+        io: req.app.get('io')
+      });
     }
 
     await auditLog({
@@ -790,6 +972,7 @@ router.post('/annotations', async (req, res) => {
       actionType: 'annotation_created',
       targetType: 'annotation',
       targetId: annotation.id,
+      projectId: req.params.projectId,
       metadata: {
         annotationId: annotation.id,
         documentId,
@@ -858,15 +1041,14 @@ router.post('/annotations/:annotationId/replies', async (req, res) => {
     }
 
     for (const userId of notifyUsers) {
-      await query(
-        `INSERT INTO notifications (id, user_id, type, title, body, ref_id)
-         VALUES (NEWID(), @userId, 'annotation_reply', 'New reply to annotation',
-                 'Someone replied to an annotation on a document.', @refId)`,
-        {
-          userId: { type: sql.UniqueIdentifier, value: userId },
-          refId: { type: sql.NVarChar, value: req.params.annotationId },
-        }
-      );
+      await notify({
+        userId: userId,
+        type: 'annotation_reply',
+        title: 'New reply to annotation',
+        body: 'Someone replied to an annotation on a document.',
+        refId: req.params.annotationId,
+        io: req.app.get('io')
+      });
     }
 
     await auditLog({
@@ -875,6 +1057,7 @@ router.post('/annotations/:annotationId/replies', async (req, res) => {
       actionType: 'annotation_reply',
       targetType: 'annotation',
       targetId: req.params.annotationId,
+      projectId: req.params.projectId,
       metadata: {
         annotationId: req.params.annotationId,
         replyId: reply.id,
@@ -946,6 +1129,7 @@ router.patch('/annotations/:annotationId/resolve', async (req, res) => {
       actionType: 'annotation_resolved',
       targetType: 'annotation',
       targetId: req.params.annotationId,
+      projectId: req.params.projectId,
       metadata: {
         annotationId: req.params.annotationId,
       },
@@ -1415,6 +1599,7 @@ router.post('/messages/threaded', async (req, res) => {
       actionType: 'message_sent',
       targetType: 'project',
       targetId: req.params.projectId,
+      projectId: req.params.projectId,
       metadata: { 
         messageId: message.id, 
         parentMessageId, 
@@ -1507,10 +1692,7 @@ router.get('/workspace/audit', async (req, res) => {
   try {
     const { limit = 100, offset = 0, userId, actionType, dateFrom, dateTo } = req.query;
     
-    let whereClause = `WHERE a.env_id = @envId AND (
-      a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
-      OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
-    )`;
+    let whereClause = `WHERE a.env_id = @envId AND a.project_id = @pid`;
     
     const params = {
       envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
@@ -1552,7 +1734,7 @@ router.get('/workspace/audit', async (req, res) => {
          u.team as actor_team,
          u.avatar_initials
        FROM audit_logs a
-       JOIN users u ON a.id = u.id
+       JOIN users u ON a.actor_id = u.id
        ${whereClause}
        ORDER BY a.created_at DESC
        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
@@ -1570,10 +1752,7 @@ router.get('/workspace/audit/summary', async (req, res) => {
   try {
     const { dateFrom, dateTo } = req.query;
     
-    let whereClause = `WHERE u.env_id = @envId AND (
-      a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
-      OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
-    )`;
+    let whereClause = `WHERE u.env_id = @envId AND a.project_id = @pid`;
     
     const params = {
       envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
@@ -1729,6 +1908,17 @@ router.post('/workspace/session', async (req, res) => {
       );
     }
     
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: action === 'start' ? 'workspace_session_started' : 'workspace_session_ended',
+      targetType: 'project',
+      targetId: req.params.projectId,
+      projectId: req.params.projectId,
+      metadata: { ip: req.ip },
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, message: `Workspace session ${action}ed successfully.` });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to track workspace session.' });

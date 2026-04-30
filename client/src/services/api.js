@@ -67,6 +67,7 @@ export const projectsAPI = {
   history: (id)     => api.get(`/projects/${id}/history`),
   complete: (id)    => api.post(`/projects/${id}/complete`),
   getTeamUsers: (params) => api.get('/projects/team/users', { params }),
+  toggleMilestone: (id, mid) => api.post(`/projects/${id}/milestones/${mid}/toggle`),
 };
 
 // ── Workspace ─────────────────────────────────────────────
@@ -75,9 +76,8 @@ export const workspaceAPI = {
   getMessages:  (pid)        => api.get(`/projects/${pid}/messages`),
   sendMessage:  (pid, data)   => api.post(`/projects/${pid}/messages`, typeof data === 'string' ? { content: data } : data),
   getFiles:     (pid)        => api.get(`/projects/${pid}/files`),
-  uploadFile:   (pid, form)  => api.post(`/projects/${pid}/files`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  }),
+  uploadFile:   (pid, form)  => api.post(`/projects/${pid}/files`, form),
+  deleteFile:   (pid, fid)   => api.delete(`/projects/${pid}/files/${fid}`),
   downloadFile: (pid, fid)   => `/api/projects/${pid}/files/${fid}/download`,
   getFileVersions: (pid, fid) => api.get(`/projects/${pid}/files/${fid}/versions`),
   restoreFileVersion: (pid, fid, versionId) => api.post(`/projects/${pid}/files/${fid}/restore`, { versionId }),
@@ -93,6 +93,13 @@ export const workspaceAPI = {
   createAnnotation: (pid, data) => api.post(`/projects/${pid}/annotations`, data),
   addAnnotationReply: (pid, annotationId, data) => api.post(`/projects/${pid}/annotations/${annotationId}/replies`, data),
   resolveAnnotation: (pid, annotationId) => api.patch(`/projects/${pid}/annotations/${annotationId}/resolve`),
+  getHealth: (pid) => api.get(`/projects/${pid}/workspace/health`),
+  getWorkspaceMembers: (pid) => api.get(`/projects/${pid}/workspace/members`),
+  logActivity: (pid, data) => api.post(`/projects/${pid}/workspace/activity`, data),
+  getAuditHistory: (pid, params) => api.get(`/projects/${pid}/workspace/audit`, { params }),
+  getAuditSummary: (pid, params) => api.get(`/projects/${pid}/workspace/audit/summary`, { params }),
+  exportAuditHistory: (pid, params) => api.get(`/projects/${pid}/workspace/audit/export`, { params, responseType: 'blob' }),
+  convertMessageToTask: (pid, messageId, data) => api.post(`/projects/${pid}/messages/${messageId}/task`, data),
 };
 
 // ── Tasks ─────────────────────────────────────────────────

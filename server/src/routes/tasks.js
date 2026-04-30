@@ -139,8 +139,8 @@ router.post('/',
   validate([
     body('title').trim().isLength({ min: 3, max: 200 }).withMessage('Task title must be 3–200 characters.'),
     body('priority').isIn(['Critical', 'High', 'Medium', 'Low']).withMessage('Priority must be Critical, High, Medium, or Low.'),
-    body('type').optional().isIn(['DATA_TASK', 'FINANCIAL_REVIEW', 'MODEL_VALIDATION', 'DOCUMENTATION', 'OTHER']).withMessage('Invalid task type.'),
-    body('dueDate').optional().isDate().withMessage('Valid due date is required.'),
+    body('type').optional({ checkFalsy: true }).isIn(['DATA_TASK', 'FINANCIAL_REVIEW', 'MODEL_VALIDATION', 'DOCUMENTATION', 'OTHER']).withMessage('Invalid task type.'),
+    body('dueDate').optional({ checkFalsy: true }).isISO8601().withMessage('Valid due date is required.'),
   ]),
   async (req, res) => {
     try {
@@ -238,6 +238,7 @@ router.post('/',
         targetType: 'task',
         targetId: task.id,
         targetName: title,
+        projectId: projectId || null,
         metadata: { priority, assignedTo, type, blockedByCount: blockedBy.length },
         ipAddress: req.ip,
       });
@@ -284,6 +285,15 @@ router.patch('/:id/status',
         }
       );
 
+      const io = req.app.get('io');
+      if (io) {
+        if (task.project_id) {
+          io.to(`project:${task.project_id}`).emit('task_status_updated', { taskId: id, status, projectId: task.project_id });
+        } else {
+          io.to(`env:${req.user.env_id}`).emit('task_status_updated', { taskId: id, status });
+        }
+      }
+
       // Notify task creator if someone else updates it
       if (task.created_by !== req.user.id) {
         await notify({
@@ -303,6 +313,7 @@ router.patch('/:id/status',
         targetType: 'task',
         targetId: id,
         targetName: task.title,
+        projectId: task.project_id,
         metadata: { from: task.status, to: status },
         ipAddress: req.ip,
       });
@@ -353,6 +364,7 @@ router.post('/:id/comments',
         targetType: 'task',
         targetId: id,
         targetName: taskResult.recordset[0].title,
+        projectId: taskResult.recordset[0].project_id,
         ipAddress: req.ip,
       });
 
@@ -412,6 +424,7 @@ router.patch('/:id/admin', authenticate, async (req, res) => {
       targetType: 'task',
       targetId: id,
       targetName: taskResult.recordset[0].title,
+      projectId: taskResult.recordset[0].project_id,
       metadata: { assignedTo, priority, forceCloseReason: !!forceCloseReason },
       ipAddress: req.ip,
     });
