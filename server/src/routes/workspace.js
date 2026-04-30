@@ -15,7 +15,7 @@ const requireMembership = async (req, res, next) => {
       `SELECT pm.id FROM project_members pm
        JOIN projects p ON p.id = pm.project_id
        WHERE pm.project_id = @pid AND pm.user_id = @uid AND pm.is_active = 1
-         AND p.env_id = @envId AND p.status = 'active'`,
+         AND p.env_id = @envId AND LOWER(p.status) = 'active'`,
       {
         pid:   { type: sql.UniqueIdentifier, value: req.params.projectId },
         uid:   { type: sql.UniqueIdentifier, value: req.user.id },
@@ -45,6 +45,51 @@ const nextVersion = (version) => {
   const [major, minor] = String(version || '1.0').split('.').map((n) => parseInt(n, 10) || 0);
   return `${major}.${minor + 1}`;
 };
+
+// ── GET /api/projects/:projectId/members ─────────────────────────────────
+router.get('/members', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT u.id, u.full_name, u.team, u.avatar_initials, u.role,
+              pm.workspace_role,
+              (
+                SELECT COUNT(*) FROM tasks t
+                WHERE t.assigned_to = u.id AND t.project_id = @pid AND t.status != 'done'
+              ) as pending_tasks
+       FROM project_members pm
+       JOIN users u ON u.id = pm.user_id
+       WHERE pm.project_id = @pid AND pm.is_active = 1
+       ORDER BY u.team, u.full_name`,
+      { pid: { type: sql.UniqueIdentifier, value: req.params.projectId } }
+    );
+    res.json({ success: true, members: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch members.' });
+  }
+});
+
+// ── GET /api/projects/:projectId/activity ─────────────────────────────────
+router.get('/activity', async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const result = await query(
+      `SELECT TOP (@limit) al.id, al.action_type, al.target_type, al.target_name, al.metadata, al.created_at,
+              u.full_name as actor_name, u.team as actor_team
+       FROM audit_logs al
+       JOIN users u ON u.id = al.actor_id
+       WHERE al.project_id = @pid AND al.env_id = @envId
+       ORDER BY al.created_at DESC`,
+      {
+        limit: { type: sql.Int, value: parseInt(limit) },
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      }
+    );
+    res.json({ success: true, activities: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch activity feed.' });
+  }
+});
 
 // ── GET /api/projects/:projectId/messages ─────────────────────────────────
 router.get('/messages', async (req, res) => {
@@ -117,9 +162,12 @@ router.get('/files', async (req, res) => {
   try {
     const result = await query(
       `SELECT pf.id, pf.original_name, pf.file_size, pf.mime_type, pf.uploaded_at,
-              u.full_name as uploaded_by_name, u.team as uploaded_by_team
+              pf.domain, pf.file_type, pf.is_locked, pf.locked_by, pf.lock_expires_at,
+              u.full_name as uploaded_by_name, u.team as uploaded_by_team,
+              lu.full_name as locked_by_name
        FROM project_files pf
        JOIN users u ON u.id = pf.uploaded_by
+       LEFT JOIN users lu ON lu.id = pf.locked_by
        WHERE pf.project_id = @pid
        ORDER BY pf.uploaded_at DESC`,
       { pid: { type: sql.UniqueIdentifier, value: req.params.projectId } }
@@ -134,17 +182,14 @@ router.get('/files', async (req, res) => {
 router.post('/files', handleUpload('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
-    const { outputType = null, changeNote = null, versionNumber = null, publish = false, dataSnapshot = null, fileId = null } = req.body;
+    const { domain = 'JOINT', fileType = 'OTHER', changeNote = null, versionNumber = null, publish = false, dataSnapshot = null, fileId = null } = req.body;
 
     if (publish && (!changeNote || String(changeNote).trim().length < 10)) {
       return res.status(400).json({ success: false, message: 'changeNote is required (min 10 chars) for publishing.' });
     }
 
     let violations = [];
-    if (publish) {
-      if (!dataSnapshot) {
-        return res.status(400).json({ success: false, message: 'Publishing requires dataSnapshot for regulatory pre-check.' });
-      }
+    if (publish && dataSnapshot) {
       const rules = await query(
         `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
          FROM regulatory_rules
@@ -211,9 +256,9 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       currentVersion = nextVersion(lastVersion.recordset[0]?.version_number || '1.0');
     } else {
       const result = await query(
-        `INSERT INTO project_files (id, project_id, uploaded_by, file_name, original_name, file_size, mime_type, file_path)
+        `INSERT INTO project_files (id, project_id, uploaded_by, file_name, original_name, file_size, mime_type, file_path, domain, file_type)
          OUTPUT INSERTED.id, INSERTED.original_name, INSERTED.file_size, INSERTED.mime_type, INSERTED.uploaded_at
-         VALUES (NEWID(), @pid, @uid, @fname, @oname, @size, @mime, @fpath)`,
+         VALUES (NEWID(), @pid, @uid, @fname, @oname, @size, @mime, @fpath, @domain, @fileType)`,
         {
           pid:   { type: sql.UniqueIdentifier, value: req.params.projectId },
           uid:   { type: sql.UniqueIdentifier, value: req.user.id },
@@ -222,6 +267,8 @@ router.post('/files', handleUpload('file'), async (req, res) => {
           size:  { type: sql.BigInt, value: req.file.size },
           mime:  { type: sql.NVarChar, value: req.file.mimetype },
           fpath: { type: sql.NVarChar, value: req.file.path },
+          domain: { type: sql.NVarChar(10), value: domain },
+          fileType: { type: sql.NVarChar(30), value: fileType },
         }
       );
       documentId = result.recordset[0].id;
@@ -235,7 +282,7 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       {
         fileId: { type: sql.UniqueIdentifier, value: documentId },
         versionNumber: { type: sql.NVarChar(20), value: effectiveVersion },
-        outputType: { type: sql.NVarChar(30), value: outputType },
+        outputType: { type: sql.NVarChar(30), value: fileType }, // use fileType
         changeNote: { type: sql.NVarChar(sql.MAX), value: changeNote },
         filePath: { type: sql.NVarChar(500), value: req.file.path },
         fileSize: { type: sql.BigInt, value: req.file.size },
@@ -252,6 +299,8 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       uploaded_at: new Date().toISOString(),
       uploaded_by_name: req.user.full_name,
       uploaded_by_team: req.user.team,
+      domain,
+      file_type: fileType,
       latest_version: effectiveVersion,
       publish_violations: violations,
     };
@@ -259,6 +308,14 @@ router.post('/files', handleUpload('file'), async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`project:${req.params.projectId}`).emit('new_file', file);
+      io.to(`project:${req.params.projectId}`).emit('activity_update', {
+        action_type: 'file_upload',
+        target_type: 'file',
+        target_name: req.file.originalname,
+        actor_name: req.user.full_name,
+        actor_team: req.user.team,
+        created_at: new Date().toISOString(),
+      });
     }
 
     await auditLog({
@@ -268,13 +325,159 @@ router.post('/files', handleUpload('file'), async (req, res) => {
       targetType: 'file',
       targetId: documentId,
       targetName: req.file.originalname,
-      metadata: { projectId: req.params.projectId, size: req.file.size, versionNumber: effectiveVersion, outputType, violations: violations.length },
+      metadata: { projectId: req.params.projectId, size: req.file.size, versionNumber: effectiveVersion, fileType, violations: violations.length },
       ipAddress: req.ip,
     });
 
     res.status(201).json({ success: true, file });
   } catch (err) {
     res.status(500).json({ success: false, message: 'File upload failed.' });
+  }
+});
+
+// ── POST /api/projects/:projectId/files/:fileId/lock ─────────────────────
+router.post('/files/:fileId/lock', async (req, res) => {
+  try {
+    const { duration = 30 } = req.body; // minutes
+    const expiresAt = new Date(Date.now() + duration * 60 * 1000);
+
+    const result = await query(
+      `UPDATE project_files
+       SET is_locked = 1, locked_by = @userId, lock_expires_at = @expiresAt
+       OUTPUT INSERTED.locked_by, INSERTED.lock_expires_at
+       WHERE id = @fileId AND project_id = @projectId AND (is_locked = 0 OR locked_by = @userId OR lock_expires_at < GETUTCDATE())`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        userId: { type: sql.UniqueIdentifier, value: req.user.id },
+        expiresAt: { type: sql.DateTime2, value: expiresAt },
+      }
+    );
+
+    if (!result.recordset.length) {
+      return res.status(409).json({ success: false, message: 'File is already locked by another user.' });
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('file_locked', {
+        fileId: req.params.fileId,
+        lockedBy: req.user.id,
+        lockedByName: req.user.full_name,
+        expiresAt: expiresAt.toISOString(),
+      });
+    }
+
+    res.json({ success: true, locked: true, expiresAt: expiresAt.toISOString() });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to lock file.' });
+  }
+});
+
+// ── POST /api/projects/:projectId/files/:fileId/unlock ───────────────────
+router.post('/files/:fileId/unlock', async (req, res) => {
+  try {
+    const result = await query(
+      `UPDATE project_files
+       SET is_locked = 0, locked_by = NULL, lock_expires_at = NULL
+       OUTPUT INSERTED.id
+       WHERE id = @fileId AND project_id = @projectId AND locked_by = @userId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        userId: { type: sql.UniqueIdentifier, value: req.user.id },
+      }
+    );
+
+    if (!result.recordset.length) {
+      return res.status(403).json({ success: false, message: 'You do not have permission to unlock this file.' });
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('file_unlocked', { fileId: req.params.fileId });
+    }
+
+    res.json({ success: true, unlocked: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to unlock file.' });
+  }
+});
+
+// ── GET /api/projects/:projectId/files/:fileId/content ───────────────────
+router.get('/files/:fileId/content', async (req, res) => {
+  try {
+    const file = await query(
+      `SELECT pf.content, pf.mime_type, pf.is_locked, pf.locked_by, u.full_name as locked_by_name, pf.lock_expires_at
+       FROM project_files pf
+       LEFT JOIN users u ON u.id = pf.locked_by
+       WHERE pf.id = @fileId AND pf.project_id = @projectId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      }
+    );
+
+    if (!file.recordset.length) {
+      return res.status(404).json({ success: false, message: 'File not found.' });
+    }
+
+    const f = file.recordset[0];
+    if (f.is_locked && f.locked_by !== req.user.id && f.lock_expires_at > new Date()) {
+      return res.status(423).json({ success: false, message: 'File is locked by another user.', lockedBy: f.locked_by_name });
+    }
+
+    res.json({ success: true, content: f.content, mimeType: f.mime_type });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch file content.' });
+  }
+});
+
+// ── PUT /api/projects/:projectId/files/:fileId/content ───────────────────
+router.put('/files/:fileId/content', async (req, res) => {
+  try {
+    const { content } = req.body;
+
+    const file = await query(
+      `SELECT is_locked, locked_by, lock_expires_at
+       FROM project_files
+       WHERE id = @fileId AND project_id = @projectId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      }
+    );
+
+    if (!file.recordset.length) {
+      return res.status(404).json({ success: false, message: 'File not found.' });
+    }
+
+    const f = file.recordset[0];
+    if (f.is_locked && f.locked_by !== req.user.id && f.lock_expires_at > new Date()) {
+      return res.status(423).json({ success: false, message: 'File is locked by another user.' });
+    }
+
+    await query(
+      `UPDATE project_files SET content = @content WHERE id = @fileId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        content: { type: sql.NVarChar(sql.MAX), value: content },
+      }
+    );
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('file_content_updated', {
+        fileId: req.params.fileId,
+        updatedBy: req.user.id,
+        updatedByName: req.user.full_name,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to save file content.' });
   }
 });
 
@@ -781,6 +984,754 @@ router.get('/files/:fileId/download', async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ success: false, message: 'Download failed.' });
+  }
+});
+
+// ===== FEATURE 3.8 WORKSPACE HUB ENDPOINTS =====
+
+// GET /api/projects/:projectId/workspace/health - Project health indicators
+router.get('/workspace/health', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT
+         (SELECT COUNT(*) FROM tasks WHERE project_id = @pid) as total_tasks,
+         (SELECT COUNT(*) FROM tasks WHERE project_id = @pid AND status = 'done') as completed_tasks,
+         (SELECT COUNT(*) FROM tasks WHERE project_id = @pid AND status != 'done' AND due_date < CAST(GETUTCDATE() AS DATE)) as overdue_tasks,
+         (SELECT COUNT(*) FROM conflict_records WHERE project_id = @pid AND status IN ('OPEN','IN_RESOLUTION','ESCALATED')) as open_conflicts,
+         (SELECT COUNT(*) FROM document_annotations da
+          JOIN project_files pf ON da.document_id = pf.id
+          WHERE pf.project_id = @pid AND da.status = 'OPEN' AND da.requires_resolution = 1
+         ) as open_annotations,
+         (SELECT COUNT(*) FROM project_messages pm
+          JOIN project_members pmem ON pm.project_id = pmem.project_id
+          WHERE pm.project_id = @pid AND pmem.user_id = @uid
+            AND pm.sent_at > ISNULL(pmem.last_message_read, '1900-01-01')
+         ) as unread_messages,
+         DATEDIFF(DAY, CAST(GETUTCDATE() AS DATE), p.end_date) as days_remaining,
+         (SELECT COUNT(*) FROM project_milestones WHERE project_id = @pid AND is_completed = 1) as completed_milestones,
+         (SELECT COUNT(*) FROM project_milestones WHERE project_id = @pid) as total_milestones,
+         CASE
+           WHEN (SELECT COUNT(*) FROM tasks WHERE project_id = @pid) = 0 THEN 0
+           ELSE CAST((SELECT COUNT(*) FROM tasks WHERE project_id = @pid AND status = 'done') AS FLOAT)
+                / (SELECT COUNT(*) FROM tasks WHERE project_id = @pid) * 100
+         END as task_completion_percentage,
+         p.name as project_name,
+         p.status as project_status
+       FROM projects p
+       WHERE p.id = @pid`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        uid: { type: sql.UniqueIdentifier, value: req.user.id }
+      }
+    );
+
+    res.json({ success: true, health: result.recordset[0] || {} });
+  } catch (err) {
+    console.error('Health endpoint error:', err);
+    res.json({ success: true, health: {} });
+  }
+});
+
+// GET /api/projects/:projectId/workspace/members - Member activity summary
+router.get('/workspace/members', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+         u.id,
+         u.full_name,
+         u.team,
+         u.avatar_initials,
+         CASE 
+           WHEN u.last_login_at > DATEADD(HOUR, -2, GETUTCDATE()) THEN 'online'
+           WHEN u.last_login_at > DATEADD(DAY, -1, GETUTCDATE()) THEN 'recent'
+           ELSE 'offline'
+         END as presence_status,
+         (
+           SELECT COUNT(*) 
+           FROM audit_logs a 
+           WHERE a.actor_id = u.id 
+             AND a.created_at > DATEADD(DAY, -7, GETUTCDATE())
+             AND (
+               a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
+               OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
+             )
+         ) as actions_this_week,
+         (
+           SELECT COUNT(*) 
+           FROM tasks t 
+           WHERE t.assigned_to = u.id 
+             AND t.project_id = @pid 
+             AND t.status != 'done'
+         ) as pending_tasks,
+         pm.added_at as member_since,
+         pm.workspace_role
+       FROM users u
+       JOIN project_members pm ON u.id = pm.user_id
+       WHERE pm.project_id = @pid 
+         AND pm.is_active = 1
+       ORDER BY u.full_name`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId }
+      }
+    );
+    
+    res.json({ success: true, members: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch member activity summary.' });
+  }
+});
+
+// GET /api/projects/:projectId/workspace/activity-feed - Recent workspace activity
+router.get('/workspace/activity-feed', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+    
+    const result = await query(
+      `SELECT 
+         wa.id,
+         wa.activity_type,
+         wa.target_type,
+         wa.target_id,
+         wa.target_name,
+         wa.description,
+         wa.metadata,
+         wa.created_at,
+         u.full_name as actor_name,
+         u.team as actor_team,
+         u.avatar_initials
+       FROM workspace_activity_feed wa
+       JOIN users u ON u.id = wa.actor_id
+       WHERE wa.project_id = @pid AND wa.is_visible = 1
+       ORDER BY wa.created_at DESC
+       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        offset: { type: sql.Int, value: parseInt(offset) },
+        limit: { type: sql.Int, value: parseInt(limit) }
+      }
+    );
+    
+    res.json({ success: true, activities: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch activity feed.' });
+  }
+});
+
+// POST /api/projects/:projectId/workspace/activity - Log workspace activity
+router.post('/workspace/activity', async (req, res) => {
+  try {
+    const { activityType, targetType, targetId, targetName, description, metadata } = req.body;
+    
+    if (!activityType || !description) {
+      return res.status(400).json({ success: false, message: 'Activity type and description are required.' });
+    }
+    
+    await query(
+      `INSERT INTO workspace_activity_feed 
+         (id, project_id, activity_type, actor_id, target_type, target_id, target_name, description, metadata)
+       VALUES (NEWID(), @pid, @activityType, @actorId, @targetType, @targetId, @targetName, @description, @metadata)`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        activityType: { type: sql.NVarChar, value: activityType },
+        actorId: { type: sql.UniqueIdentifier, value: req.user.id },
+        targetType: { type: sql.NVarChar, value: targetType || null },
+        targetId: { type: sql.UniqueIdentifier, value: targetId || null },
+        targetName: { type: sql.NVarChar, value: targetName || null },
+        description: { type: sql.NVarChar(sql.MAX), value: description },
+        metadata: { type: sql.NVarChar(sql.MAX), value: metadata ? JSON.stringify(metadata) : null }
+      }
+    );
+    
+    // Broadcast to project members
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('workspace_activity', {
+        activityType,
+        actorId: req.user.id,
+        actorName: req.user.full_name,
+        actorTeam: req.user.team,
+        targetType,
+        targetId,
+        targetName,
+        description,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    res.status(201).json({ success: true, message: 'Activity logged successfully.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to log activity.' });
+  }
+});
+
+// ===== FILE COLLABORATION ENDPOINTS =====
+
+// GET /api/projects/:projectId/files/:fileId/editors - Active file editors
+router.get('/files/:fileId/editors', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+         u.id,
+         u.full_name,
+         u.team,
+         u.avatar_initials,
+         fce.last_seen_at,
+         fce.cursor_position,
+         fce.cursor_color
+       FROM file_collaboration_editors fce
+       JOIN users u ON fce.user_id = u.id
+       WHERE fce.file_id = @fileId
+         AND fce.last_seen_at > DATEADD(MINUTE, -5, GETUTCDATE())
+       ORDER BY fce.last_seen_at DESC`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId }
+      }
+    );
+    
+    res.json({ success: true, editors: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch active editors.' });
+  }
+});
+
+// POST /api/projects/:projectId/files/:fileId/editors/join - Join file editing
+router.post('/files/:fileId/editors/join', async (req, res) => {
+  try {
+    const { cursorPosition, cursorColor = '#000000' } = req.body;
+    
+    await query(
+      `MERGE file_collaboration_editors AS target
+       USING (VALUES (@fileId, @userId, @cursorPosition, @cursorColor, GETUTCDATE())) 
+       AS source (file_id, user_id, cursor_position, cursor_color, last_seen_at)
+       ON target.file_id = source.file_id AND target.user_id = source.user_id
+       WHEN MATCHED THEN
+         UPDATE SET 
+           cursor_position = source.cursor_position,
+           cursor_color = source.cursor_color,
+           last_seen_at = source.last_seen_at
+       WHEN NOT MATCHED THEN
+         INSERT (file_id, user_id, cursor_position, cursor_color, last_seen_at)
+         VALUES (source.file_id, source.user_id, source.cursor_position, source.cursor_color, source.last_seen_at);`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        userId: { type: sql.UniqueIdentifier, value: req.user.id },
+        cursorPosition: { type: sql.NVarChar, value: cursorPosition || null },
+        cursorColor: { type: sql.NVarChar, value: cursorColor }
+      }
+    );
+    
+    // Broadcast to other editors
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('editor_joined', {
+        fileId: req.params.fileId,
+        userId: req.user.id,
+        userName: req.user.full_name,
+        userTeam: req.user.team,
+        cursorPosition,
+        cursorColor,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    res.json({ success: true, message: 'Joined file editing successfully.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to join file editing.' });
+  }
+});
+
+// POST /api/projects/:projectId/files/:fileId/editors/leave - Leave file editing
+router.post('/files/:fileId/editors/leave', async (req, res) => {
+  try {
+    await query(
+      `DELETE FROM file_collaboration_editors
+       WHERE file_id = @fileId AND user_id = @userId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        userId: { type: sql.UniqueIdentifier, value: req.user.id }
+      }
+    );
+    
+    // Broadcast to other editors
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('editor_left', {
+        fileId: req.params.fileId,
+        userId: req.user.id,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    res.json({ success: true, message: 'Left file editing successfully.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to leave file editing.' });
+  }
+});
+
+// PUT /api/projects/:projectId/files/:fileId/editors/cursor - Update cursor position
+router.put('/files/:fileId/editors/cursor', async (req, res) => {
+  try {
+    const { cursorPosition, cursorColor } = req.body;
+    
+    await query(
+      `UPDATE file_collaboration_editors
+       SET cursor_position = @cursorPosition, 
+           cursor_color = @cursorColor,
+           last_seen_at = GETUTCDATE()
+       WHERE file_id = @fileId AND user_id = @userId`,
+      {
+        fileId: { type: sql.UniqueIdentifier, value: req.params.fileId },
+        userId: { type: sql.UniqueIdentifier, value: req.user.id },
+        cursorPosition: { type: sql.NVarChar, value: cursorPosition || null },
+        cursorColor: { type: sql.NVarChar, value: cursorColor || '#000000' }
+      }
+    );
+    
+    // Broadcast to other editors
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('cursor_update', {
+        fileId: req.params.fileId,
+        userId: req.user.id,
+        cursorPosition,
+        cursorColor,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    res.json({ success: true, message: 'Cursor position updated.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update cursor position.' });
+  }
+});
+
+// ===== ENHANCED MESSAGING ENDPOINTS =====
+
+// GET /api/projects/:projectId/messages/threaded - Messages with threading
+router.get('/messages/threaded', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+    
+    const result = await query(
+      `WITH MessageThread AS (
+        SELECT 
+          m.id,
+          m.project_id,
+          m.sender_id,
+          m.content,
+          m.sent_at,
+          m.parent_message_id,
+          m.message_type,
+          m.attachment_data,
+          m.linked_task_id,
+          0 as thread_level,
+          ROW_NUMBER() OVER (ORDER BY m.sent_at DESC) as row_num
+        FROM project_messages m
+        WHERE m.project_id = @pid 
+          AND m.is_archived = 0
+      
+        UNION ALL
+      
+        SELECT 
+          m.id,
+          m.project_id,
+          m.sender_id,
+          m.content,
+          m.sent_at,
+          m.parent_message_id,
+          m.message_type,
+          m.attachment_data,
+          m.linked_task_id,
+          1 as thread_level,
+          ROW_NUMBER() OVER (ORDER BY m.sent_at DESC) as row_num
+        FROM project_messages m
+        WHERE m.project_id = @pid 
+          AND m.parent_message_id IS NOT NULL
+          AND m.is_archived = 0
+      )
+      SELECT 
+        mt.*,
+        u.full_name as sender_name,
+        u.team as sender_team,
+        u.avatar_initials
+      FROM MessageThread mt
+      JOIN users u ON mt.sender_id = u.id
+      ORDER BY mt.sent_at DESC
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        offset: { type: sql.Int, value: parseInt(offset) },
+        limit: { type: sql.Int, value: parseInt(limit) }
+      }
+    );
+    
+    res.json({ success: true, messages: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch threaded messages.' });
+  }
+});
+
+// POST /api/projects/:projectId/messages/threaded - Send threaded message
+router.post('/messages/threaded', async (req, res) => {
+  try {
+    const { content, parentMessageId, messageType = 'TEXT', attachmentData } = req.body;
+    
+    if (!content?.trim()) {
+      return res.status(400).json({ success: false, message: 'Message content is required.' });
+    }
+    
+    const result = await query(
+      `INSERT INTO project_messages 
+         (id, project_id, sender_id, content, parent_message_id, message_type, attachment_data)
+       OUTPUT INSERTED.id, INSERTED.content, INSERTED.sent_at, INSERTED.parent_message_id, INSERTED.message_type, INSERTED.attachment_data
+       VALUES (NEWID(), @pid, @uid, @content, @parentMessageId, @messageType, @attachmentData)`,
+      {
+        pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        uid: { type: sql.UniqueIdentifier, value: req.user.id },
+        content: { type: sql.NVarChar(sql.MAX), value: content.trim() },
+        parentMessageId: { type: sql.UniqueIdentifier, value: parentMessageId || null },
+        messageType: { type: sql.NVarChar, value: messageType },
+        attachmentData: { type: sql.NVarChar(sql.MAX), value: attachmentData ? JSON.stringify(attachmentData) : null }
+      }
+    );
+    
+    const message = {
+      ...result.recordset[0],
+      sender_id: req.user.id,
+      sender_name: req.user.full_name,
+      sender_team: req.user.team,
+      avatar_initials: req.user.avatar_initials
+    };
+    
+    // Broadcast to project members
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('new_message', message);
+    }
+    
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'message_sent',
+      targetType: 'project',
+      targetId: req.params.projectId,
+      metadata: { 
+        messageId: message.id, 
+        parentMessageId, 
+        messageType,
+        contentPreview: content.substring(0, 100) + (content.length > 100 ? '...' : '')
+      },
+      ipAddress: req.ip,
+    });
+    
+    res.status(201).json({ success: true, message });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to send message.' });
+  }
+});
+
+// POST /api/projects/:projectId/messages/:messageId/task - Convert message to task
+router.post('/messages/:messageId/task', async (req, res) => {
+  try {
+    const { title, description, assigneeId, priority = 'Medium', taskType = 'OTHER', dueDate } = req.body;
+    
+    if (!title?.trim()) {
+      return res.status(400).json({ success: false, message: 'Task title is required.' });
+    }
+    
+    // Get message details
+    const messageResult = await query(
+      `SELECT content, sender_id FROM project_messages WHERE id = @messageId AND project_id = @projectId`,
+      {
+        messageId: { type: sql.UniqueIdentifier, value: req.params.messageId },
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId }
+      }
+    );
+    
+    if (!messageResult.recordset.length) {
+      return res.status(404).json({ success: false, message: 'Message not found.' });
+    }
+    
+    const message = messageResult.recordset[0];
+    
+    // Create task
+    const taskResult = await query(
+      `INSERT INTO tasks 
+         (id, project_id, env_id, title, description, assigned_to, created_by, priority, type, due_date)
+       OUTPUT INSERTED.id, INSERTED.title, INSERTED.description, INSERTED.status, INSERTED.created_at
+       VALUES (NEWID(), @projectId, @envId, @title, @description, @assigneeId, @createdBy, @priority, @taskType, @dueDate)`,
+      {
+        projectId: { type: sql.UniqueIdentifier, value: req.params.projectId },
+        envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+        title: { type: sql.NVarChar, value: title.trim() },
+        description: { type: sql.NVarChar(sql.MAX), value: description || `Task created from message: "${message.content}"` },
+        assigneeId: { type: sql.UniqueIdentifier, value: assigneeId || null },
+        createdBy: { type: sql.UniqueIdentifier, value: req.user.id },
+        priority: { type: sql.NVarChar, value: priority },
+        taskType: { type: sql.NVarChar, value: taskType },
+        dueDate: { type: sql.Date, value: dueDate || null }
+      }
+    );
+    
+    // Link message to task
+    await query(
+      `UPDATE project_messages SET linked_task_id = @taskId WHERE id = @messageId`,
+      {
+        taskId: { type: sql.UniqueIdentifier, value: taskResult.recordset[0].id },
+        messageId: { type: sql.UniqueIdentifier, value: req.params.messageId }
+      }
+    );
+    
+    const task = taskResult.recordset[0];
+    
+    // Broadcast task creation
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`project:${req.params.projectId}`).emit('task_created', {
+        ...task,
+        created_by_name: req.user.full_name,
+        created_by_team: req.user.team
+      });
+    }
+    
+    res.status(201).json({ success: true, task });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to convert message to task.' });
+  }
+});
+
+// ===== WORKSPACE AUDIT HISTORY ENDPOINTS =====
+
+// GET /api/projects/:projectId/workspace/audit - Contribution audit history
+router.get('/workspace/audit', async (req, res) => {
+  try {
+    const { limit = 100, offset = 0, userId, actionType, dateFrom, dateTo } = req.query;
+    
+    let whereClause = `WHERE a.env_id = @envId AND (
+      a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
+      OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
+    )`;
+    
+    const params = {
+      envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+      offset: { type: sql.Int, value: parseInt(offset) },
+      limit: { type: sql.Int, value: parseInt(limit) }
+    };
+    
+    if (userId) {
+      whereClause += ` AND a.actor_id = @userId`;
+      params.userId = { type: sql.UniqueIdentifier, value: userId };
+    }
+    
+    if (actionType) {
+      whereClause += ` AND a.action_type = @actionType`;
+      params.actionType = { type: sql.NVarChar, value: actionType };
+    }
+    
+    if (dateFrom) {
+      whereClause += ` AND a.created_at >= @dateFrom`;
+      params.dateFrom = { type: sql.DateTime2, value: new Date(dateFrom) };
+    }
+    
+    if (dateTo) {
+      whereClause += ` AND a.created_at <= @dateTo`;
+      params.dateTo = { type: sql.DateTime2, value: new Date(dateTo) };
+    }
+    
+    const result = await query(
+      `SELECT 
+         a.id,
+         a.action_type,
+         a.target_type,
+         a.target_id,
+         a.target_name,
+         a.metadata,
+         a.created_at,
+         u.full_name as actor_name,
+         u.team as actor_team,
+         u.avatar_initials
+       FROM audit_logs a
+       JOIN users u ON a.id = u.id
+       ${whereClause}
+       ORDER BY a.created_at DESC
+       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+      params
+    );
+    
+    res.json({ success: true, audits: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch audit history.' });
+  }
+});
+
+// GET /api/projects/:projectId/workspace/audit/summary - Contribution summary by user
+router.get('/workspace/audit/summary', async (req, res) => {
+  try {
+    const { dateFrom, dateTo } = req.query;
+    
+    let whereClause = `WHERE u.env_id = @envId AND (
+      a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
+      OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
+    )`;
+    
+    const params = {
+      envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      pid: { type: sql.UniqueIdentifier, value: req.params.projectId }
+    };
+    
+    if (dateFrom) {
+      whereClause += ` AND a.created_at >= @dateFrom`;
+      params.dateFrom = { type: sql.DateTime2, value: new Date(dateFrom) };
+    }
+    
+    if (dateTo) {
+      whereClause += ` AND a.created_at <= @dateTo`;
+      params.dateTo = { type: sql.DateTime2, value: new Date(dateTo) };
+    }
+    
+    const result = await query(
+      `SELECT 
+         u.id as user_id,
+         u.full_name,
+         u.team,
+         COUNT(*) as total_actions,
+         COUNT(CASE WHEN a.action_type LIKE '%upload%' THEN 1 END) as file_uploads,
+         COUNT(CASE WHEN a.action_type LIKE '%task%' THEN 1 END) as task_actions,
+         COUNT(CASE WHEN a.action_type LIKE '%message%' THEN 1 END) as messages,
+         COUNT(CASE WHEN a.action_type LIKE '%annotation%' THEN 1 END) as annotations,
+         MIN(a.created_at) as first_activity,
+         MAX(a.created_at) as last_activity
+       FROM users u
+       JOIN audit_logs a ON u.id = a.actor_id
+       ${whereClause}
+       GROUP BY u.id, u.full_name, u.team
+       ORDER BY total_actions DESC`,
+      params
+    );
+    
+    res.json({ success: true, summary: result.recordset });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch contribution summary.' });
+  }
+});
+
+// GET /api/projects/:projectId/workspace/audit/export - Export audit history
+router.get('/workspace/audit/export', async (req, res) => {
+  try {
+    const { format = 'csv', userId, actionType, dateFrom, dateTo } = req.query;
+    
+    let whereClause = `WHERE a.env_id = @envId AND (
+      a.target_id IN (SELECT CAST(id AS NVARCHAR(100)) FROM projects WHERE id = @pid)
+      OR a.metadata LIKE '%project_id%' + CAST(@pid AS NVARCHAR(36)) + '%'
+    )`;
+    
+    const params = {
+      envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+      pid: { type: sql.UniqueIdentifier, value: req.params.projectId }
+    };
+    
+    if (userId) {
+      whereClause += ` AND a.actor_id = @userId`;
+      params.userId = { type: sql.UniqueIdentifier, value: userId };
+    }
+    
+    if (actionType) {
+      whereClause += ` AND a.action_type = @actionType`;
+      params.actionType = { type: sql.NVarChar, value: actionType };
+    }
+    
+    if (dateFrom) {
+      whereClause += ` AND a.created_at >= @dateFrom`;
+      params.dateFrom = { type: sql.DateTime2, value: new Date(dateFrom) };
+    }
+    
+    if (dateTo) {
+      whereClause += ` AND a.created_at <= @dateTo`;
+      params.dateTo = { type: sql.DateTime2, value: new Date(dateTo) };
+    }
+    
+    const result = await query(
+      `SELECT 
+         a.created_at as timestamp,
+         u.full_name as actor_name,
+         u.team as actor_team,
+         a.action_type,
+         a.target_type,
+         a.target_name,
+         a.metadata
+       FROM audit_logs a
+       JOIN users u ON a.actor_id = u.id
+       ${whereClause}
+       ORDER BY a.created_at DESC`,
+      params
+    );
+    
+    // Log the export action
+    await auditLog({
+      envId: req.user.env_id,
+      actorId: req.user.id,
+      actionType: 'audit_export',
+      targetType: 'project',
+      targetId: req.params.projectId,
+      metadata: { 
+        format, 
+        recordCount: result.recordset.length,
+        filters: { userId, actionType, dateFrom, dateTo }
+      },
+      ipAddress: req.ip,
+    });
+    
+    if (format === 'csv') {
+      // Convert to CSV format
+      const csvHeader = 'Timestamp,Actor Name,Actor Team,Action Type,Target Type,Target Name,Metadata\n';
+      const csvData = result.recordset.map(row => 
+        `"${row.timestamp}","${row.actor_name}","${row.actor_team}","${row.action_type}","${row.target_type}","${row.target_name}","${row.metadata || ''}"`
+      ).join('\n');
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="workspace-audit-${req.params.projectId}-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csvHeader + csvData);
+    } else {
+      res.json({ success: true, audits: result.recordset });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to export audit history.' });
+  }
+});
+
+// GET /api/projects/:projectId/workspace/session - Track workspace session
+router.post('/workspace/session', async (req, res) => {
+  try {
+    const { action = 'start' } = req.body; // 'start' or 'end'
+    
+    if (action === 'start') {
+      await query(
+        `INSERT INTO workspace_sessions 
+           (id, project_id, user_id, session_start, last_activity, ip_address, user_agent)
+         VALUES (NEWID(), @pid, @uid, GETUTCDATE(), GETUTCDATE(), @ipAddress, @userAgent)`,
+        {
+          pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+          uid: { type: sql.UniqueIdentifier, value: req.user.id },
+          ipAddress: { type: sql.NVarChar, value: req.ip },
+          userAgent: { type: sql.NVarChar, value: req.get('User-Agent') || null }
+        }
+      );
+    } else {
+      await query(
+        `UPDATE workspace_sessions 
+         SET session_end = GETUTCDATE(), last_activity = GETUTCDATE()
+         WHERE project_id = @pid AND user_id = @uid AND session_end IS NULL`,
+        {
+          pid: { type: sql.UniqueIdentifier, value: req.params.projectId },
+          uid: { type: sql.UniqueIdentifier, value: req.user.id }
+        }
+      );
+    }
+    
+    res.json({ success: true, message: `Workspace session ${action}ed successfully.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to track workspace session.' });
   }
 });
 

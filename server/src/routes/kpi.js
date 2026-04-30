@@ -212,10 +212,14 @@ router.post('/layout', validate([
 });
 
 router.post('/', validate([
+  body('projectId').optional({ nullable: true }).isUUID().withMessage('Project ID must be a valid UUID.'),
   body('metricKey').trim().isLength({ min: 2 }).withMessage('Metric key is required.'),
   body('metricValue').isFloat().withMessage('Metric value must be numeric.'),
+  body('unit').optional({ nullable: true }).trim().isLength({ min: 1 }).withMessage('Unit is required.'),
+  body('targetValue').optional({ nullable: true }).isFloat().withMessage('Target value must be numeric.'),
   body('domain').isIn(['CA', 'DS']).withMessage('Domain must be CA or DS.'),
   body('source').isIn(['MANUAL', 'AUTO_INGESTED']).withMessage('Invalid source.'),
+  body('periodLabel').optional({ nullable: true }).trim().isLength({ max: 50 }).withMessage('Period label must be at most 50 characters.'),
 ]), async (req, res) => {
   try {
     const {
@@ -237,6 +241,25 @@ router.post('/', validate([
     const safePeriodStart = periodStart ? new Date(periodStart) : new Date(now.getFullYear(), now.getMonth(), 1);
     const safePeriodEnd = periodEnd ? new Date(periodEnd) : new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
+    const safeMetricValueRaw = parseFloat(metricValue);
+    if (Number.isNaN(safeMetricValueRaw)) throw new Error('Metric value must be numeric.');
+    const safeMetricValue = Number(safeMetricValueRaw.toFixed(4));
+    if (!Number.isFinite(safeMetricValue) || Math.abs(safeMetricValue) > 999999.9999) {
+      throw new Error('Metric value exceeds allowed precision of 4 decimal places and max 6 integer digits.');
+    }
+
+    const safeTargetValue = targetValue !== null && targetValue !== ''
+      ? (() => {
+          const parsed = parseFloat(targetValue);
+          if (Number.isNaN(parsed)) throw new Error('Target value must be numeric.');
+          const rounded = Number(parsed.toFixed(4));
+          if (!Number.isFinite(rounded) || Math.abs(rounded) > 999999.9999) {
+            throw new Error('Target value exceeds allowed precision of 4 decimal places and max 6 integer digits.');
+          }
+          return rounded;
+        })()
+      : null;
+
     await query(
       `INSERT INTO kpi_records (
         id, env_id, user_id, project_id, metric_key, metric_value, unit, target_value, domain, source, period_label, period_start, period_end
@@ -249,9 +272,9 @@ router.post('/', validate([
         userId: { type: sql.UniqueIdentifier, value: targetUserId },
         projectId: { type: sql.UniqueIdentifier, value: projectId },
         metricKey: { type: sql.NVarChar(100), value: metricKey },
-        metricValue: { type: sql.Decimal(10, 4), value: parseFloat(metricValue) },
+        metricValue: { type: sql.Decimal(10, 4), value: safeMetricValue },
         unit: { type: sql.NVarChar(20), value: unit },
-        targetValue: { type: sql.Decimal(10, 4), value: targetValue !== null ? parseFloat(targetValue) : null },
+        targetValue: { type: sql.Decimal(10, 4), value: safeTargetValue },
         domain: { type: sql.NVarChar(10), value: domain },
         source: { type: sql.NVarChar(20), value: source },
         periodLabel: { type: sql.NVarChar(50), value: periodLabel },
@@ -270,11 +293,97 @@ router.post('/', validate([
       ipAddress: req.ip,
     });
 
-    const createdConflicts = await detectKpiConflicts({
-      envId: req.user.env_id,
-      projectId: projectId || null,
-      io: req.app.get('io'),
-    });
+    // Regulatory pre-check for DS KPIs (3.7.3)
+    let precheckViolations = [];
+    if (domain === 'DS' && projectId) {
+      const rules = await query(
+        `SELECT id, field_name, operator, threshold_value, severity, description, regulatory_reference
+         FROM regulatory_rules
+         WHERE env_id = @envId AND (project_id = @projectId OR project_id IS NULL)`,
+        {
+          envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+          projectId: { type: sql.UniqueIdentifier, value: projectId },
+        }
+      );
+      const dataSnapshot = { [metricKey]: safeMetricValue };
+      for (const rule of rules.recordset) {
+        const val = dataSnapshot?.[rule.field_name];
+        if (val === undefined || val === null || Number.isNaN(Number(val))) continue;
+        const compareRule = (operator, value, threshold) => {
+          if (operator === 'GT') return value > threshold;
+          if (operator === 'LT') return value < threshold;
+          if (operator === 'EQ') return value === threshold;
+          if (operator === 'NEQ') return value !== threshold;
+          return false;
+        };
+        if (compareRule(rule.operator, Number(val), Number(rule.threshold_value))) {
+          precheckViolations.push({
+            ruleId: rule.id,
+            fieldName: rule.field_name,
+            value: Number(val),
+            threshold: Number(rule.threshold_value),
+            severity: rule.severity,
+            description: rule.description,
+            regulatoryReference: rule.regulatory_reference,
+          });
+        }
+      }
+      if (precheckViolations.length > 0) {
+        // Create constraint breach logs
+        for (const v of precheckViolations) {
+          await query(
+            `INSERT INTO constraint_breach_logs
+              (id, env_id, project_id, field_name, severity, description, regulatory_reference, status, created_by, created_at)
+             VALUES
+              (NEWID(), @envId, @projectId, @fieldName, @severity, @description, @regRef, 'OPEN', @createdBy, GETUTCDATE())`,
+            {
+              envId: { type: sql.UniqueIdentifier, value: req.user.env_id },
+              projectId: { type: sql.UniqueIdentifier, value: projectId },
+              fieldName: { type: sql.NVarChar(100), value: v.fieldName },
+              severity: { type: sql.NVarChar(10), value: v.severity },
+              description: { type: sql.NVarChar(sql.MAX), value: v.description },
+              regRef: { type: sql.NVarChar(255), value: v.regulatoryReference || null },
+              createdBy: { type: sql.UniqueIdentifier, value: req.user.id },
+            }
+          );
+        }
+        await auditLog({
+          envId: req.user.env_id,
+          actorId: req.user.id,
+          actionType: 'regulatory_precheck_run',
+          targetType: 'project',
+          targetId: projectId,
+          metadata: { passed: false, violations: precheckViolations.length, domain: 'DS', metricKey },
+          ipAddress: req.ip,
+        });
+        return res.status(400).json({
+          success: false,
+          message: 'KPI submission blocked by regulatory pre-check.',
+          precheck: { passed: false, violations: precheckViolations },
+        });
+      } else {
+        await auditLog({
+          envId: req.user.env_id,
+          actorId: req.user.id,
+          actionType: 'regulatory_precheck_run',
+          targetType: 'project',
+          targetId: projectId,
+          metadata: { passed: true, violations: 0, domain: 'DS', metricKey },
+          ipAddress: req.ip,
+        });
+      }
+    }
+
+    let createdConflicts = [];
+    try {
+      createdConflicts = await detectKpiConflicts({
+        envId: req.user.env_id,
+        projectId: projectId || null,
+        io: req.app.get('io'),
+      });
+    } catch (conflictErr) {
+      console.error('Conflict detection failed after KPI save:', conflictErr);
+    }
 
     res.status(201).json({
       success: true,
@@ -283,7 +392,9 @@ router.post('/', validate([
       conflicts: createdConflicts,
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to record KPI.' });
+    console.error('Failed to record KPI:', err);
+    const serverMessage = err.response?.data?.message || err.message || 'Failed to record KPI. Please check your values and try again.';
+    res.status(500).json({ success: false, message: serverMessage });
   }
 });
 

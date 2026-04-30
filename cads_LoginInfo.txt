@@ -1,0 +1,20 @@
+Env Code:
+CADS-EHF5NVYNXGXF
+
+Super Admin:
+admin1@admin.com
+
+CA Admin:
+ca.admin@demo.com
+
+DS Admin:
+ds.admin@demo.com
+
+CA EMP2:
+ca.emp2@emp.com
+
+DS EMP2:
+ds.emp@emp.com
+
+Password for all:
+Admin@123
