@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
-import { kpiAPI } from '../services/api';
+import { kpiAPI, conflictsAPI } from '../services/api';
+import { Link } from 'react-router-dom';
 
 const KPIPage = () => {
   const { user, isAdmin } = useAuth();
@@ -10,6 +11,7 @@ const KPIPage = () => {
   const [loading, setLoading] = useState(true);
   const [teamView, setTeamView] = useState(false);
   const [projectId, setProjectId] = useState('');
+  const [conflictAlerts, setConflictAlerts] = useState([]);
   const [layoutEdit, setLayoutEdit] = useState(false);
   const [newKpi, setNewKpi] = useState({
     metricKey: '',
@@ -28,6 +30,12 @@ const KPIPage = () => {
     try {
       const res = await kpiAPI.get({ teamView, projectId: projectId || undefined });
       setData(res.data);
+      // Load conflicts
+      try {
+        const cParams = projectId ? { projectId } : {};
+        const cRes = await conflictsAPI.list(cParams);
+        setConflictAlerts(cRes.data?.conflicts?.filter(c => c.status !== 'RESOLVED') || []);
+      } catch {}
     } finally {
       setLoading(false);
     }
@@ -60,17 +68,50 @@ const KPIPage = () => {
   };
 
   const addKpi = async () => {
+    if (!newKpi.metricKey.trim()) {
+      alert('Metric key is required.');
+      return;
+    }
+    if (newKpi.metricValue === '' || Number.isNaN(Number(newKpi.metricValue))) {
+      alert('Metric value must be a numeric value.');
+      return;
+    }
+    if (!/^-?\d+(?:\.\d{1,4})?$/.test(String(newKpi.metricValue).trim())) {
+      alert('Metric value must be numeric and allow up to 4 decimal places.');
+      return;
+    }
+    if (!['CA', 'DS'].includes(newKpi.domain)) {
+      alert('Please select a valid domain (CA or DS).');
+      return;
+    }
+
     try {
-      await kpiAPI.record({
+      const result = await kpiAPI.record({
         ...newKpi,
         projectId: projectId || null,
         metricValue: Number(newKpi.metricValue),
         targetValue: newKpi.targetValue ? Number(newKpi.targetValue) : null,
       });
       setNewKpi((p) => ({ ...p, metricKey: '', metricValue: '', targetValue: '' }));
+      // Show conflict detection results
+      if (result.data?.conflictsCreated > 0) {
+        alert(`⚠️ ${result.data.conflictsCreated} CA-DS conflict(s) detected! Check the Conflicts tab in your project workspace.`);
+      }
       load();
     } catch (err) {
-      alert(err.response?.data?.message || err.response?.data?.errors?.[0]?.msg || 'Failed to save KPI entry.');
+      console.error('KPI save failed:', err);
+      // Show pre-check violations if any
+      if (err.response?.data?.precheck?.violations?.length > 0) {
+        const violations = err.response.data.precheck.violations;
+        alert(`🚫 Regulatory Pre-Check FAILED:\n${violations.map(v => `• ${v.fieldName}: ${v.description} (value: ${v.value}, threshold: ${v.threshold})`).join('\n')}`);
+        return;
+      }
+      alert(
+        err.response?.data?.message
+        || err.response?.data?.errors?.[0]?.msg
+        || err.message
+        || 'Failed to save KPI entry.'
+      );
     }
   };
 
@@ -139,6 +180,22 @@ const KPIPage = () => {
         )}
       </div>
 
+      {/* Conflict Alerts Banner */}
+      {conflictAlerts.length > 0 && (
+        <div style={{ background: 'linear-gradient(135deg, #fee2e2 0%, #fff1f2 100%)', border: '1.5px solid #fca5a5', borderRadius: 'var(--radius-lg)', padding: '1rem 1.5rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <strong style={{ color: 'var(--danger)' }}>⚠️ {conflictAlerts.length} Open CA-DS Conflict{conflictAlerts.length > 1 ? 's' : ''} Detected</strong>
+          </div>
+          {conflictAlerts.slice(0, 3).map((c, i) => (
+            <Link key={c.id || i} to={`/projects/${c.project_id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0.7rem', background: 'white', borderRadius: 'var(--radius-md)', marginBottom: '0.3rem', border: '1px solid #fecaca', fontSize: '0.8rem' }}>
+              <span><strong>{c.field_name}</strong> {c.project_name && <span style={{ color: 'var(--muted)' }}>· {c.project_name}</span>}</span>
+              <span style={{ padding: '0.1rem 0.4rem', borderRadius: '4px', background: 'var(--danger)', color: 'white', fontSize: '0.7rem' }}>Δ {Math.abs(Number(c.delta_percent)).toFixed(1)}%</span>
+            </Link>
+          ))}
+          {conflictAlerts.length > 3 && <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.3rem' }}>+ {conflictAlerts.length - 3} more conflicts</div>}
+        </div>
+      )}
+
       {tab === 'dashboard' && (
         <>
           <div className="card" style={{ padding: '1rem', marginBottom: '1rem' }}>
@@ -167,14 +224,16 @@ const KPIPage = () => {
 
           <div className="card" style={{ padding: '1rem' }}>
             <strong>Add KPI Entry</strong>
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 0.7fr 0.8fr 0.7fr 0.7fr', gap: '0.5rem', marginTop: '0.75rem' }}>
-              <input className="form-input" placeholder="metric key" value={newKpi.metricKey} onChange={(e) => setNewKpi((p) => ({ ...p, metricKey: e.target.value }))} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 0.5fr 0.7fr 0.8fr 0.6fr 0.6fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+              <input className="form-input" placeholder="metric key (e.g. revenue)" value={newKpi.metricKey} onChange={(e) => setNewKpi((p) => ({ ...p, metricKey: e.target.value }))} />
               <input className="form-input" placeholder="value" type="number" value={newKpi.metricValue} onChange={(e) => setNewKpi((p) => ({ ...p, metricValue: e.target.value }))} />
               <input className="form-input" placeholder="unit" value={newKpi.unit} onChange={(e) => setNewKpi((p) => ({ ...p, unit: e.target.value }))} />
               <input className="form-input" placeholder="target" type="number" value={newKpi.targetValue} onChange={(e) => setNewKpi((p) => ({ ...p, targetValue: e.target.value }))} />
-              <select className="form-input" value={newKpi.domain} onChange={(e) => setNewKpi((p) => ({ ...p, domain: e.target.value }))}><option>CA</option><option>DS</option></select>
-              <button className="btn btn-ca" onClick={addKpi}>Add</button>
+              <input className="form-input" placeholder="period (e.g. Q1-2026)" value={newKpi.periodLabel} onChange={(e) => setNewKpi((p) => ({ ...p, periodLabel: e.target.value }))} />
+              <select className="form-input" value={newKpi.domain} onChange={(e) => setNewKpi((p) => ({ ...p, domain: e.target.value }))}><option value="CA">CA</option><option value="DS">DS</option></select>
+              <button type="button" className="btn btn-ca" onClick={addKpi}>Add</button>
             </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.4rem' }}>💡 Use the same metric key for CA and DS entries to enable automatic conflict detection. Select a project above to link the KPI entry.</div>
           </div>
 
           <div className="card" style={{ padding: '1rem', marginTop: '1rem' }}>

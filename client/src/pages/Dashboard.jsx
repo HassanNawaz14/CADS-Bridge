@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
-import { projectsAPI, tasksAPI, kpiAPI } from '../services/api';
+import { projectsAPI, tasksAPI, kpiAPI, conflictsAPI } from '../services/api';
 import { Link } from 'react-router-dom';
 
 const StatCard = ({ label, value, sub, color, icon }) => (
@@ -22,6 +22,7 @@ const Dashboard = () => {
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [kpi, setKpi] = useState(null);
+  const [conflicts, setConflicts] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -35,6 +36,11 @@ const Dashboard = () => {
         setProjects(pRes.data.projects || []);
         setTasks(tRes.data.tasks || []);
         setKpi(kRes.data);
+        // Fetch all open conflicts in one call
+        try {
+          const cRes = await conflictsAPI.list({ status: 'OPEN' });
+          setConflicts(cRes.data?.conflicts || []);
+        } catch {}
       } catch {}
       setLoading(false);
     };
@@ -82,12 +88,72 @@ const Dashboard = () => {
       </div>
 
       {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
         <StatCard label="Active Projects" value={projects.length} sub="shared workspaces" icon="🚀" color={accentColor} />
         <StatCard label="My Open Tasks" value={myTasks.length} sub={overdueTasks.length > 0 ? `${overdueTasks.length} overdue` : 'on track'} icon="📋" color={overdueTasks.length > 0 ? 'var(--danger)' : undefined} />
         <StatCard label="My Avg KPI" value={avgMetric !== null ? `${avgMetric}%` : '–'} sub="across all metrics" icon="📊" />
+        <StatCard label="Open Conflicts" value={conflicts.length} sub={conflicts.length > 0 ? 'needs resolution' : 'all clear'} icon="⚔️" color={conflicts.length > 0 ? 'var(--danger)' : 'var(--success)'} />
         <StatCard label="Collab Score" value={`${kpi?.collaboration?.active_projects || 0}`} sub="active cross-team projects" icon="🤝" color="var(--success)" />
       </div>
+
+      {/* Conflict Alerts */}
+      {conflicts.length > 0 && (
+        <div style={{
+          background: 'linear-gradient(135deg, #1e1b4b 0%, #4c1d95 50%, #7c3aed 100%)',
+          borderRadius: 'var(--radius-lg)',
+          padding: '1.25rem 1.5rem',
+          marginBottom: '1.5rem',
+          boxShadow: '0 8px 32px rgba(124, 58, 237, 0.25)',
+          position: 'relative',
+          overflow: 'hidden',
+        }}>
+          <div style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,0.05)' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem', position: 'relative' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(239,68,68,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ fontSize: '1.1rem' }}>⚠️</span>
+              </div>
+              <div>
+                <h3 style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: '1.05rem', color: '#fff', margin: 0 }}>
+                  {conflicts.length} Active CA-DS Conflict{conflicts.length > 1 ? 's' : ''} Detected
+                </h3>
+                <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.6)' }}>Requires immediate attention from both teams</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', position: 'relative' }}>
+            {conflicts.slice(0, 4).map((c, i) => {
+              const sevColor = c.severity === 'CRITICAL' ? '#ef4444' : c.severity === 'HIGH' ? '#f97316' : c.severity === 'MEDIUM' ? '#eab308' : '#3b82f6';
+              return (
+                <Link key={c.id || i} to={`/projects/${c.project_id}`} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '0.6rem 0.85rem', background: 'rgba(255,255,255,0.08)',
+                  borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)',
+                  fontSize: '0.82rem', color: '#fff', transition: 'all 0.2s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.15)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: sevColor, boxShadow: `0 0 8px ${sevColor}` }} />
+                    <div>
+                      <strong>{c.field_name}</strong>
+                      {c.project_name && <span style={{ color: 'rgba(255,255,255,0.5)', marginLeft: '0.4rem', fontSize: '0.75rem' }}>· {c.project_name}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)' }}>DS: {Number(c.ds_value).toLocaleString()} → CA: {Number(c.ca_actual_value).toLocaleString()}</span>
+                    <span style={{ padding: '0.2rem 0.55rem', borderRadius: '12px', background: sevColor, color: '#fff', fontSize: '0.68rem', fontWeight: 700 }}>
+                      Δ {Math.abs(Number(c.delta_percent)).toFixed(1)}%
+                    </span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+          {conflicts.length > 4 && <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.5)', marginTop: '0.5rem', textAlign: 'center' }}>+ {conflicts.length - 4} more conflicts</div>}
+        </div>
+      )}
 
       {/* Two-column layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: '1.25rem' }}>

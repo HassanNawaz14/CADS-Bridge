@@ -71,8 +71,9 @@ export const projectsAPI = {
 
 // ── Workspace ─────────────────────────────────────────────
 export const workspaceAPI = {
+  getMembers: (pid) => api.get(`/projects/${pid}/members`),
   getMessages:  (pid)        => api.get(`/projects/${pid}/messages`),
-  sendMessage:  (pid, content) => api.post(`/projects/${pid}/messages`, { content }),
+  sendMessage:  (pid, data)   => api.post(`/projects/${pid}/messages`, typeof data === 'string' ? { content: data } : data),
   getFiles:     (pid)        => api.get(`/projects/${pid}/files`),
   uploadFile:   (pid, form)  => api.post(`/projects/${pid}/files`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
@@ -80,6 +81,11 @@ export const workspaceAPI = {
   downloadFile: (pid, fid)   => `/api/projects/${pid}/files/${fid}/download`,
   getFileVersions: (pid, fid) => api.get(`/projects/${pid}/files/${fid}/versions`),
   restoreFileVersion: (pid, fid, versionId) => api.post(`/projects/${pid}/files/${fid}/restore`, { versionId }),
+  lockFile: (pid, fid) => api.post(`/projects/${pid}/files/${fid}/lock`),
+  unlockFile: (pid, fid) => api.post(`/projects/${pid}/files/${fid}/unlock`),
+  getFileContent: (pid, fid) => api.get(`/projects/${pid}/files/${fid}/content`),
+  saveFileContent: (pid, fid, content, changeNote) => api.put(`/projects/${pid}/files/${fid}/content`, { content, changeNote }),
+  getActivityFeed: (pid, params) => api.get(`/projects/${pid}/workspace/activity-feed`, { params }),
   getBreaches: (pid) => api.get(`/projects/${pid}/breaches`),
   createBreach: (pid, data) => api.post(`/projects/${pid}/breaches`, data),
   resolveBreach: (pid, breachId, data) => api.patch(`/projects/${pid}/breaches/${breachId}/resolve`, data),
@@ -145,13 +151,20 @@ export const knowledgeHubAPI = {
 
 // ── Conflicts (3.7) ────────────────────────────────────────
 export const conflictsAPI = {
+  // 3.7.1 — Rules & Detection
+  listRules: (params) => api.get('/conflicts/rules/list', { params }),
+  createRule: (data) => api.post('/conflicts/rules', data),
+  deleteRule: (id) => api.delete(`/conflicts/rules/${id}`),
+  detect: (data) => api.post('/conflicts/detect', data),
   list: (params) => api.get('/conflicts', { params }),
+  // 3.7.2 — Resolution Workflow
   addRootCause: (id, data) => api.post(`/conflicts/${id}/root-cause`, data),
   addCAResponse: (id, data) => api.post(`/conflicts/${id}/ca-response`, data),
   setReconciliation: (id, data) => api.post(`/conflicts/${id}/reconciliation`, data),
   confirmResolution: (id) => api.post(`/conflicts/${id}/confirm`),
-  listRules: (params) => api.get('/conflicts/rules/list', { params }),
-  createRule: (data) => api.post('/conflicts/rules', data),
+  // 3.7.3 — Pre-check & Settings
+  precheck: (data) => api.post('/conflicts/precheck', data),
   getSettings: () => api.get('/conflicts/settings'),
   updateSettings: (data) => api.put('/conflicts/settings', data),
+  getTrendReport: (params) => api.get('/conflicts/trend-report', { params }),
 };

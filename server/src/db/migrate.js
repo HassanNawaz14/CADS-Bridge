@@ -158,6 +158,36 @@ const migrations = [
      file_path     NVARCHAR(500)    NOT NULL,
      uploaded_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'domain')
+   BEGIN
+     ALTER TABLE project_files ADD domain NVARCHAR(10) NOT NULL DEFAULT 'JOINT';
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'file_type')
+   BEGIN
+     ALTER TABLE project_files ADD file_type NVARCHAR(30) NOT NULL DEFAULT 'OTHER';
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'is_locked')
+   BEGIN
+     ALTER TABLE project_files ADD is_locked BIT NOT NULL DEFAULT 0;
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'locked_by')
+   BEGIN
+     ALTER TABLE project_files ADD locked_by UNIQUEIDENTIFIER NULL REFERENCES users(id);
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'lock_expires_at')
+   BEGIN
+     ALTER TABLE project_files ADD lock_expires_at DATETIME2 NULL;
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_files' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_files') AND name = 'content')
+   BEGIN
+     ALTER TABLE project_files ADD content NVARCHAR(MAX) NULL;
+   END`,
 
   // ── 10. Tasks ─────────────────────────────────────────────────────────
   `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='tasks' AND xtype='U')
@@ -529,6 +559,159 @@ const migrations = [
      advancement_type    NVARCHAR(100)    NOT NULL,
      created_at          DATETIME2        NOT NULL DEFAULT GETUTCDATE()
    );`,
+
+  // Workspace Feature 3.8 - Additional Tables
+
+  // 19. Project Messages with Threading Support
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'parent_message_id')
+   BEGIN
+     ALTER TABLE project_messages ADD parent_message_id UNIQUEIDENTIFIER NULL REFERENCES project_messages(id);
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'message_type')
+   BEGIN
+     ALTER TABLE project_messages ADD message_type NVARCHAR(20) NOT NULL DEFAULT 'TEXT' CHECK (message_type IN ('TEXT','FILE_ATTACHMENT','TASK_REFERENCE','ANNOTATION_REFERENCE'));
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'attachment_data')
+   BEGIN
+     ALTER TABLE project_messages ADD attachment_data NVARCHAR(MAX) NULL;
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'is_archived')
+   BEGIN
+     ALTER TABLE project_messages ADD is_archived BIT NOT NULL DEFAULT 0;
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_messages' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_messages') AND name = 'linked_task_id')
+   BEGIN
+     ALTER TABLE project_messages ADD linked_task_id UNIQUEIDENTIFIER NULL REFERENCES tasks(id);
+   END`,
+
+  // 20. File Collaboration Editors (Real-time co-editing presence)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='file_collaboration_editors' AND xtype='U')
+   CREATE TABLE file_collaboration_editors (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     file_id        UNIQUEIDENTIFIER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+     user_id        UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     cursor_position NVARCHAR(100)    NULL,
+     cursor_color   NVARCHAR(7)       NOT NULL DEFAULT '#000000',
+     last_seen_at   DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (file_id, user_id)
+   );`,
+
+  // 21. Project Members Extended (for workspace features)
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'last_message_read')
+   BEGIN
+     ALTER TABLE project_members ADD last_message_read DATETIME2 NULL;
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'notification_preferences')
+   BEGIN
+     ALTER TABLE project_members ADD notification_preferences NVARCHAR(MAX) NULL; -- JSON
+   END`,
+  `IF EXISTS (SELECT * FROM sysobjects WHERE name='project_members' AND xtype='U')
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('project_members') AND name = 'workspace_role')
+   BEGIN
+     ALTER TABLE project_members ADD workspace_role NVARCHAR(20) NOT NULL DEFAULT 'MEMBER' CHECK (workspace_role IN ('MEMBER','OBSERVER','EDITOR'));
+   END`,
+
+  // 22. Workspace Activity Feed (extends audit_logs)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_activity_feed' AND xtype='U')
+   CREATE TABLE workspace_activity_feed (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id     UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     activity_type  NVARCHAR(50)     NOT NULL, -- 'file_upload', 'task_completed', 'message_sent', etc.
+     actor_id       UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     target_type    NVARCHAR(50)     NULL,     -- 'file', 'task', 'message', 'annotation'
+     target_id      UNIQUEIDENTIFIER NULL,
+     target_name    NVARCHAR(255)    NULL,
+     description    NVARCHAR(MAX)    NOT NULL,
+     metadata       NVARCHAR(MAX)    NULL,     -- JSON for additional context
+     is_visible     BIT              NOT NULL DEFAULT 1,
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  // 23. Workspace Sessions (for tracking active workspace visits)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_sessions' AND xtype='U')
+   CREATE TABLE workspace_sessions (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id     UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     user_id        UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     session_start  DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     session_end    DATETIME2        NULL,
+     last_activity  DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     ip_address     NVARCHAR(45)     NULL,
+     user_agent     NVARCHAR(500)    NULL
+   );`,
+
+  // 24. Message Reactions (for chat engagement)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='message_reactions' AND xtype='U')
+   CREATE TABLE message_reactions (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     message_id     UNIQUEIDENTIFIER NOT NULL REFERENCES project_messages(id) ON DELETE CASCADE,
+     user_id        UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     reaction_type  NVARCHAR(20)     NOT NULL, -- 'like', 'thumbs_up', 'heart', etc.
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (message_id, user_id, reaction_type)
+   );`,
+
+  // 25. File Version Comments (for version collaboration)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='file_version_comments' AND xtype='U')
+   CREATE TABLE file_version_comments (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     version_id     UNIQUEIDENTIFIER NOT NULL REFERENCES project_file_versions(id) ON DELETE CASCADE,
+     author_id      UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     comment_text   NVARCHAR(MAX)    NOT NULL,
+     position_data  NVARCHAR(MAX)    NULL, -- JSON for cursor/selection position
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     updated_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  // 26. Workspace Bookmarks (for quick access)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_bookmarks' AND xtype='U')
+   CREATE TABLE workspace_bookmarks (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id     UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     user_id        UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     bookmark_type  NVARCHAR(20)     NOT NULL CHECK (bookmark_type IN ('FILE','TASK','MESSAGE','ANNOTATION')),
+     target_id      UNIQUEIDENTIFIER NOT NULL,
+     target_name    NVARCHAR(255)    NOT NULL,
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (project_id, user_id, bookmark_type, target_id)
+   );`,
+
+  // 27. Workspace Templates (for quick project setup)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_templates' AND xtype='U')
+   CREATE TABLE workspace_templates (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     env_id         UNIQUEIDENTIFIER NOT NULL REFERENCES environments(id),
+     name           NVARCHAR(200)    NOT NULL,
+     description    NVARCHAR(MAX)    NOT NULL,
+     template_type  NVARCHAR(20)     NOT NULL CHECK (template_type IN ('PROJECT_SETUP','TASK_BOARD','FILE_STRUCTURE','WORKFLOW')),
+     template_data  NVARCHAR(MAX)    NOT NULL, -- JSON configuration
+     is_active      BIT              NOT NULL DEFAULT 1,
+     created_by     UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     updated_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE()
+   );`,
+
+  // 28. Workspace Analytics (for tracking workspace usage)
+  `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='workspace_analytics' AND xtype='U')
+   CREATE TABLE workspace_analytics (
+     id             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+     project_id     UNIQUEIDENTIFIER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     metric_type    NVARCHAR(50)     NOT NULL, -- 'daily_active_users', 'files_uploaded', 'messages_sent', etc.
+     metric_value   INT              NOT NULL,
+     metric_date    DATE             NOT NULL,
+     metadata       NVARCHAR(MAX)    NULL, -- JSON for additional context
+     created_at     DATETIME2        NOT NULL DEFAULT GETUTCDATE(),
+     UNIQUE (project_id, metric_type, metric_date)
+   );`,
+
+  // Additional indexes for workspace features
   `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_users_env_email')
      CREATE INDEX IX_users_env_email ON users(env_id, email);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_audit_logs_env_created')
@@ -546,7 +729,25 @@ const migrations = [
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_document_annotations_document')
      CREATE INDEX IX_document_annotations_document ON document_annotations(document_id, document_version);
    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_annotation_replies_annotation')
-     CREATE INDEX IX_annotation_replies_annotation ON annotation_replies(annotation_id, created_at);`,
+     CREATE INDEX IX_annotation_replies_annotation ON annotation_replies(annotation_id, created_at);
+
+   // Workspace Feature 3.8 - Additional Indexes
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_project_messages_parent')
+     CREATE INDEX IX_project_messages_parent ON project_messages(parent_message_id, sent_at DESC);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_file_collaboration_editors_file')
+     CREATE INDEX IX_file_collaboration_editors_file ON file_collaboration_editors(file_id, last_seen_at DESC);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_workspace_activity_feed_project')
+     CREATE INDEX IX_workspace_activity_feed_project ON workspace_activity_feed(project_id, created_at DESC);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_workspace_sessions_project')
+     CREATE INDEX IX_workspace_sessions_project ON workspace_sessions(project_id, last_activity DESC);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_message_reactions_message')
+     CREATE INDEX IX_message_reactions_message ON message_reactions(message_id, created_at);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_file_version_comments_version')
+     CREATE INDEX IX_file_version_comments_version ON file_version_comments(version_id, created_at);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_workspace_bookmarks_project')
+     CREATE INDEX IX_workspace_bookmarks_project ON workspace_bookmarks(project_id, user_id, bookmark_type);
+   IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_workspace_analytics_project')
+     CREATE INDEX IX_workspace_analytics_project ON workspace_analytics(project_id, metric_date DESC);`,
 ];
 
 async function runMigrations() {
