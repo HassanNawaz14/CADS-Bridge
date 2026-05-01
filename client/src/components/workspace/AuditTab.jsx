@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { workspaceAPI } from '../../services/api';
 
 const AuditTab = ({ projectId, members, onNotify }) => {
@@ -7,7 +7,7 @@ const AuditTab = ({ projectId, members, onNotify }) => {
   const [view, setView] = useState('timeline');
   const [filters, setFilters] = useState({ userId:'', actionType:'', dateFrom:'', dateTo:'' });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [hRes, sRes] = await Promise.all([
         workspaceAPI.getAuditHistory(projectId, { limit: 100 }),
@@ -16,9 +16,9 @@ const AuditTab = ({ projectId, members, onNotify }) => {
       setHistory(hRes.data?.audits || []);
       setSummary(sRes.data?.summary || []);
     } catch { onNotify('error', 'Failed to load audit data'); }
-  };
+  }, [projectId, onNotify]);
 
-  useEffect(() => { load(); }, [projectId]);
+  useEffect(() => { load(); }, [load]);
 
   const exportCSV = async () => {
     try {

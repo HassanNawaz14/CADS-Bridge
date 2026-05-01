@@ -24,8 +24,9 @@ const AnnotationsTab = ({ projectId, files, user, onNotify }) => {
   const [floatingPos, setFloatingPos] = useState(null);
   const contentRef = useRef();
 
-  const isCA = user?.team === 'CA';
-  const isDS = user?.team === 'DS';
+  // isCA and isDS are currently unused but kept for future logic if needed
+  // const isCA = user?.team === 'CA';
+  // const isDS = user?.team === 'DS';
 
   // Sync selectedFile with files prop to pick up latest content/status
   useEffect(() => {
@@ -33,7 +34,7 @@ const AnnotationsTab = ({ projectId, files, user, onNotify }) => {
       const fresh = files.find(f => f.id === selectedFile.id);
       if (fresh) setSelectedFile(fresh);
     }
-  }, [files]);
+  }, [files, selectedFile]);
 
   // Load annotations for selected file
   const loadAnnotations = useCallback(async () => {
@@ -43,7 +44,7 @@ const AnnotationsTab = ({ projectId, files, user, onNotify }) => {
       const r = await workspaceAPI.getAnnotations(projectId, params);
       setAnnotations(r.data?.annotations || []);
     } catch { onNotify?.('error', 'Failed to load annotations'); }
-  }, [projectId, selectedFile]);
+  }, [projectId, selectedFile, onNotify]);
 
   useEffect(() => { loadAnnotations(); }, [loadAnnotations]);
 

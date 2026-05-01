@@ -1,0 +1,43 @@
+﻿
+> cads-bridge-client@1.0.0 build
+> react-scripts build
+
+Creating an optimized production build...
+Compiled with warnings.
+
+[eslint] 
+src\components\workspace\AnnotationsTab.jsx
+  Line 27:9:  'isCA' is assigned a value but never used                                                                                                                                                                                          no-unused-vars
+  Line 28:9:  'isDS' is assigned a value but never used                                                                                                                                                                                          no-unused-vars
+  Line 36:6:  React Hook useEffect has a missing dependency: 'selectedFile'. Either include it or remove the dependency array                                                                                                                    react-hooks/exhaustive-deps
+  Line 46:6:  React Hook useCallback has a missing dependency: 'onNotify'. Either include it or remove the dependency array. If 'onNotify' changes too often, find the parent component that defines it and wrap that definition in useCallback  react-hooks/exhaustive-deps
+
+src\components\workspace\AuditTab.jsx
+  Line 21:32:  React Hook useEffect has a missing dependency: 'load'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src\components\workspace\ConflictsTab.jsx
+  Line 44:32:  React Hook useEffect has a missing dependency: 'load'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src\components\workspace\FilesTab.jsx
+  Line 69:6:  React Hook useEffect has a missing dependency: 'onNotify'. Either include it or remove the dependency array. If 'onNotify' changes too often, find the parent component that defines it and wrap that definition in useCallback  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+File sizes after gzip:
+
+  138.14 kB  build\static\js\main.6b0f171a.js
+  3.56 kB    build\static\css\main.bb984cd0.css
+
+The project was built assuming it is hosted at /.
+You can control this with the homepage field in your package.json.
+
+The build folder is ready to be deployed.
+You may serve it with a static server:
+
+  serve -s build
+
+Find out more about deployment here:
+
+  https://cra.link/deployment
+

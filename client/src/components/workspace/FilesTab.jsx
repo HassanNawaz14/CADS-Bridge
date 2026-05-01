@@ -66,7 +66,7 @@ const FilesTab = ({ projectId, files, setFiles, user, onNotify, socket, onRefres
       setActiveEditors([]);
       setRemoteCursors([]);
     };
-  }, [socket, editorOpen, projectId]);
+  }, [socket, editorOpen, projectId, onNotify, user]);
 
   // Broadcast cursor position on selection change
   const handleEditorSelect = useCallback((e) => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { conflictsAPI } from '../../services/api';
 
 const ConflictsTab = ({ projectId, user, onNotify }) => {
@@ -17,7 +17,7 @@ const ConflictsTab = ({ projectId, user, onNotify }) => {
   const isDS = user?.team === 'DS';
   const isCA = user?.team === 'CA';
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [cRes, rRes] = await Promise.all([
         conflictsAPI.list({ projectId }),
@@ -39,9 +39,9 @@ const ConflictsTab = ({ projectId, user, onNotify }) => {
         try { const s = await conflictsAPI.getSettings(); setSettings(s.data?.settings || { slaDays:5 }); } catch {}
       }
     } catch { onNotify('error', 'Failed to load conflicts'); }
-  };
+  }, [projectId, selected, isAdmin, onNotify]);
 
-  useEffect(() => { load(); }, [projectId]);
+  useEffect(() => { load(); }, [load]);
 
   // Helper to update selected with server response
   const updateSelected = (conflict) => {
