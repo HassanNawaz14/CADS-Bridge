@@ -44,7 +44,7 @@ const TasksTab = ({ projectId, tasks, setTasks, members, user, onNotify, socket,
       const fresh = tasks.find(t => t.id === detail.id);
       if (fresh) setDetail(fresh);
     }
-  }, [tasks]);
+  }, [tasks, detail]);
 
   const createTask = async () => {
     if (form.title.trim().length < 3) { onNotify('error', 'Task title must be at least 3 characters'); return; }

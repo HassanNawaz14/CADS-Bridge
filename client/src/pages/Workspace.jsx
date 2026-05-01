@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import DashboardLayout from '../components/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
-import { workspaceAPI, tasksAPI, kpiAPI, projectsAPI } from '../services/api';
+import { workspaceAPI, tasksAPI, projectsAPI } from '../services/api';
 import FilesTab from '../components/workspace/FilesTab';
 import ChatTab from '../components/workspace/ChatTab';
 import ConflictsTab from '../components/workspace/ConflictsTab';

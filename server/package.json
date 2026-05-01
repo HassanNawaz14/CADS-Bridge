@@ -2,6 +2,9 @@
   "name": "cads-bridge-server",
   "version": "1.0.0",
   "description": "CADS-Bridge Express + SQL Server Backend",
+  "engines": {
+    "node": "20.x"
+  },
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
