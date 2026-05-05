@@ -40,7 +40,7 @@ export const AuthProvider = ({ children }) => {
     const socketUrl = process.env.REACT_APP_API_URL || (isLocalhost ? 'http://localhost:5000' : window.location.origin);
     const socket = io(socketUrl, {
       auth: { token },
-      transports: ['websocket', 'polling'],
+      transports: ['polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
