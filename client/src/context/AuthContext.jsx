@@ -42,10 +42,10 @@ export const AuthProvider = ({ children }) => {
       auth: { token },
       transports: ['polling'],
       reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
+      reconnectionAttempts: 3,
+      reconnectionDelay: 2000,
       reconnectionDelayMax: 5000,
-      timeout: 20000,
+      timeout: 10000,
     });
 
     socket.on('connect', () => {
